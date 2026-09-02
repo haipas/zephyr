@@ -2095,6 +2095,9 @@ Other notable changes
     :kconfig:option:`CONFIG_ESP32_WIFI_TASK_PINNED_TO_CORE_0`
     or :kconfig:option:`CONFIG_ESP32_WIFI_TASK_PINNED_TO_CORE_1`.
 
+  * Added experimental SMP support for the ESP32-P4 dual-core HP processor,
+    enabled with :kconfig:option:`CONFIG_SMP`.
+
 * Wi-Fi
 
   * Removed the ``samples/net/wifi/test_certs/rsa2k`` enterprise test
