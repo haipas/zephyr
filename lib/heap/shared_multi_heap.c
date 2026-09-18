@@ -77,6 +77,42 @@ int shared_multi_heap_add(struct shared_multi_heap_region *region, void *user_da
 	return 0;
 }
 
+#if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
+int shared_multi_heap_runtime_stats(enum shared_multi_heap_attr attr,
+				    struct sys_memory_stats *stats)
+{
+	struct sys_memory_stats region_stats;
+	int ret;
+
+	if (attr >= MAX_SHARED_MULTI_HEAP_ATTR || stats == NULL) {
+		return -EINVAL;
+	}
+
+	if (smh_data[attr].heap_cnt == 0) {
+		return -ENOENT;
+	}
+
+	stats->free_bytes = 0;
+	stats->allocated_bytes = 0;
+	stats->max_allocated_bytes = 0;
+
+	for (size_t hdx = 0; hdx < smh_data[attr].heap_cnt; hdx++) {
+		struct sys_heap *h = &smh_data[attr].heap_pool[hdx];
+
+		ret = sys_heap_runtime_stats_get(h, &region_stats);
+		if (ret != 0) {
+			return ret;
+		}
+
+		stats->free_bytes += region_stats.free_bytes;
+		stats->allocated_bytes += region_stats.allocated_bytes;
+		stats->max_allocated_bytes += region_stats.max_allocated_bytes;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_SYS_HEAP_RUNTIME_STATS */
+
 void shared_multi_heap_free(void *block)
 {
 	sys_multi_heap_free(&shared_multi_heap, block);

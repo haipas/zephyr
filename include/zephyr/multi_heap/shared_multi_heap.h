@@ -12,6 +12,10 @@
 #ifndef ZEPHYR_INCLUDE_MULTI_HEAP_SHARED_MULTI_HEAP_H_
 #define ZEPHYR_INCLUDE_MULTI_HEAP_SHARED_MULTI_HEAP_H_
 
+#if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
+#include <zephyr/sys/mem_stats.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -175,6 +179,28 @@ void shared_multi_heap_free(void *block);
  * @retval other	errno codes
  */
 int shared_multi_heap_add(struct shared_multi_heap_region *region, void *user_data);
+
+#if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
+/**
+ * @brief Get the summed runtime statistics of every heap region added under
+ *        one attribute
+ *
+ * Sums @ref sys_heap_runtime_stats_get over every @ref sys_heap the pool
+ * holds under `attr` (there can be more than one region per attribute, up to
+ * @ref MAX_MULTI_HEAPS -- @ref shared_multi_heap_add appends rather than
+ * replaces). Additive only: no new state, no change to any existing
+ * function's behavior.
+ *
+ * @param attr capability / attribute to sum statistics for.
+ * @param stats Pointer to struct to copy the summed statistics into.
+ *
+ * @retval 0 on success.
+ * @retval -EINVAL if `attr` is out of range or `stats` is NULL.
+ * @retval -ENOENT if no region has been added under `attr` yet.
+ */
+int shared_multi_heap_runtime_stats(enum shared_multi_heap_attr attr,
+				    struct sys_memory_stats *stats);
+#endif /* CONFIG_SYS_HEAP_RUNTIME_STATS */
 
 /**
  * @brief Reallocate memory from the memory shared multi-heap pool
