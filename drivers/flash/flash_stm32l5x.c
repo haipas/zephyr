@@ -140,7 +140,7 @@ static int write_nwords(const struct device *dev, off_t offset, const uint32_t *
 	return rc;
 }
 
-static int erase_page(const struct device *dev, unsigned int offset)
+__ramfunc static int erase_page(const struct device *dev, unsigned int offset)
 {
 	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
 	uint32_t tmp;
@@ -217,7 +217,7 @@ static int erase_page(const struct device *dev, unsigned int offset)
 	return rc;
 }
 
-int flash_stm32_block_erase_loop(const struct device *dev,
+__ramfunc int flash_stm32_block_erase_loop(const struct device *dev,
 				 unsigned int offset,
 				 unsigned int len)
 {

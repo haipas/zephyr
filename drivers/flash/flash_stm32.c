@@ -66,7 +66,7 @@ int __weak flash_stm32_check_configuration(void)
 }
 
 #if !defined(CONFIG_SOC_SERIES_STM32WBX)
-static int flash_stm32_check_status(const struct device *dev)
+__ramfunc static int flash_stm32_check_status(const struct device *dev)
 {
 
 	if (FLASH_STM32_REGS(dev)->FLASH_STM32_SR & FLASH_STM32_SR_ERRORS) {
@@ -82,7 +82,7 @@ static int flash_stm32_check_status(const struct device *dev)
 }
 #endif /* CONFIG_SOC_SERIES_STM32WBX */
 
-int flash_stm32_wait_flash_idle(const struct device *dev)
+__ramfunc int flash_stm32_wait_flash_idle(const struct device *dev)
 {
 	k_timepoint_t timeout = sys_timepoint_calc(K_MSEC(STM32_FLASH_TIMEOUT));
 	bool expired = false;

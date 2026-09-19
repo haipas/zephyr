@@ -598,6 +598,7 @@ static int stm32_sdmmc_access_read(struct disk_info *disk, uint8_t *data_buf,
 	}
 
 	while (!stm32_sdmmc_is_card_in_transfer(&priv->hsd)) {
+		k_yield();
 	}
 
 end:
@@ -684,6 +685,7 @@ static int stm32_sdmmc_access_write(struct disk_info *disk,
 	}
 
 	while (!stm32_sdmmc_is_card_in_transfer(&priv->hsd)) {
+		k_yield();
 	}
 
 end:
