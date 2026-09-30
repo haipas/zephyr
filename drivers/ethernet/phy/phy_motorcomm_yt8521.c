@@ -24,6 +24,21 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 
 #include "phy_mii.h"
 
+#define YT_ANY_HAS_PROP(prop)                                                                      \
+	(DT_ANY_COMPAT_HAS_PROP_STATUS_OKAY(motorcomm_yt8521, prop) ||                             \
+	 DT_ANY_COMPAT_HAS_PROP_STATUS_OKAY(motorcomm_yt8531, prop))
+
+#if YT_ANY_HAS_PROP(reset_gpios)
+#include <zephyr/drivers/gpio.h>
+#define YT_HAS_RESET_GPIO 1
+#else
+#define YT_HAS_RESET_GPIO 0
+#endif
+
+/* Hardware reset timing, the conservative ESP-IDF generic PHY defaults */
+#define YT_RESET_ASSERT_MS  10
+#define YT_RESET_RELEASE_MS 500
+
 #define PHY_ID_YT8521 (0x0000011A)
 #define PHY_ID_YT8531 (0x0000E91A)
 
@@ -56,9 +71,10 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 
 #define YT8521_RSSR_UTP_SPACE (0x0 << 1)
 
-#define YT8521_RGMII_CONFIG1_REG  0xA003
-#define YT8521_RC1R_RX_DELAY_MASK GENMASK(13, 10)
-#define YT8521_RC1R_TX_DELAY_MASK GENMASK(3, 0)
+#define YT8521_RGMII_CONFIG1_REG     0xA003
+#define YT8521_RC1R_RX_DELAY_MASK    GENMASK(13, 10)
+#define YT8521_RC1R_FE_TX_DELAY_MASK GENMASK(7, 4)
+#define YT8521_RC1R_TX_DELAY_MASK    GENMASK(3, 0)
 
 #define YTPHY_WOL_CONFIG_REG 0xA00A
 #define YTPHY_WCR_ENABLE     BIT(3)
@@ -73,11 +89,20 @@ struct mc_ytphy_config {
 	const struct device *mdio;
 	uint8_t rx_delay_sel;
 	uint8_t tx_delay_sel;
+	/* tx_delay_sel_fe for 10/100 Mbit/s, or -1 to leave it at its reset value */
+	int8_t tx_delay_sel_fe;
+	bool rxc_delay_enable;
+	bool phy_addr_scan;
 	enum phy_link_speed default_speeds;
+#if YT_HAS_RESET_GPIO
+	struct gpio_dt_spec reset_gpio;
+#endif
 };
 
 struct mc_ytphy_data {
 	const struct device *dev;
+	/* MDIO address in use: reg, or the one found by the address scan */
+	uint8_t phy_addr;
 	phy_callback_t cb;
 	void *cb_data;
 	struct phy_link_state state;
@@ -93,19 +118,21 @@ struct mc_ytphy_data {
 static int mc_ytphy_read(const struct device *dev, uint16_t reg, uint32_t *data)
 {
 	const struct mc_ytphy_config *config = dev->config;
+	const struct mc_ytphy_data *dev_data = dev->data;
 
 	/* Make sure excessive bits 16-31 are reset */
 	*data = 0U;
 
 	/* Read the PHY register */
-	return mdio_read(config->mdio, config->phy_addr, reg, (uint16_t *)data);
+	return mdio_read(config->mdio, dev_data->phy_addr, reg, (uint16_t *)data);
 }
 
 static int mc_ytphy_write(const struct device *dev, uint16_t reg, uint32_t data)
 {
 	const struct mc_ytphy_config *config = dev->config;
+	const struct mc_ytphy_data *dev_data = dev->data;
 
-	return mdio_write(config->mdio, config->phy_addr, reg, (uint16_t)data);
+	return mdio_write(config->mdio, dev_data->phy_addr, reg, (uint16_t)data);
 }
 
 static int mc_ytphy_modify(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
@@ -197,7 +224,9 @@ static int mc_ytphy_cfg_clock_delay(const struct device *dev)
 	uint16_t mask, val = 0;
 	int ret;
 
-	ret = mc_ytphy_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN, 0);
+	/* Fixed ~2 ns RX_CLK delay, on request only */
+	ret = mc_ytphy_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN,
+				  cfg->rxc_delay_enable ? YT8521_CCR_RXC_DLY_EN : 0);
 	if (ret) {
 		return ret;
 	}
@@ -206,6 +235,11 @@ static int mc_ytphy_cfg_clock_delay(const struct device *dev)
 
 	val |= FIELD_PREP(YT8521_RC1R_RX_DELAY_MASK, cfg->rx_delay_sel);
 	val |= FIELD_PREP(YT8521_RC1R_TX_DELAY_MASK, cfg->tx_delay_sel);
+
+	if (cfg->tx_delay_sel_fe >= 0) {
+		mask |= YT8521_RC1R_FE_TX_DELAY_MASK;
+		val |= FIELD_PREP(YT8521_RC1R_FE_TX_DELAY_MASK, cfg->tx_delay_sel_fe);
+	}
 
 	return mc_ytphy_modify_ext(dev, YT8521_RGMII_CONFIG1_REG, mask, val);
 }
@@ -282,7 +316,6 @@ static inline enum phy_link_speed mc_ytphy_get_link_speed_stat_reg(const struct 
 
 static int update_link_state(const struct device *dev)
 {
-	const struct mc_ytphy_config *const cfg = dev->config;
 	struct mc_ytphy_data *const data = dev->data;
 	uint32_t stat_reg;
 	uint32_t bmcr_reg;
@@ -299,7 +332,7 @@ static int update_link_state(const struct device *dev)
 		data->state.speed = 0;
 		if (link_up != data->state.is_up) {
 			data->state.is_up = false;
-			LOG_INF("PHY (%d) is down", cfg->phy_addr);
+			LOG_INF("PHY (%d) is down", data->phy_addr);
 			return 0;
 		}
 		return -EAGAIN;
@@ -317,7 +350,7 @@ static int update_link_state(const struct device *dev)
 			data->state.is_up = true;
 			data->state.speed = new_speed;
 
-			LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
+			LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", data->phy_addr,
 				PHY_LINK_IS_SPEED_1000M(data->state.speed) ? "1000"
 					: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100"
 										     : "10"),
@@ -338,7 +371,7 @@ static int update_link_state(const struct device *dev)
 
 	data->state.is_up = true;
 
-	LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
+	LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", data->phy_addr);
 
 	data->autoneg_timeout = sys_timepoint_calc(K_MSEC(CONFIG_PHY_AUTONEG_TIMEOUT_MS));
 	return -EINPROGRESS;
@@ -346,7 +379,6 @@ static int update_link_state(const struct device *dev)
 
 static int check_autonegotiation_completion(const struct device *dev)
 {
-	const struct mc_ytphy_config *const cfg = dev->config;
 	struct mc_ytphy_data *const data = dev->data;
 
 	uint32_t stat_reg = 0;
@@ -366,13 +398,13 @@ static int check_autonegotiation_completion(const struct device *dev)
 
 	if ((bmsr_reg & MII_BMSR_AUTONEG_COMPLETE) == 0U) {
 		if (sys_timepoint_expired(data->autoneg_timeout)) {
-			LOG_DBG("PHY (%d) auto-negotiate timeout", cfg->phy_addr);
+			LOG_DBG("PHY (%d) auto-negotiate timeout", data->phy_addr);
 			return -ETIMEDOUT;
 		}
 		return -EINPROGRESS;
 	}
 
-	LOG_DBG("PHY (%d) auto-negotiate sequence completed", cfg->phy_addr);
+	LOG_DBG("PHY (%d) auto-negotiate sequence completed", data->phy_addr);
 
 	if (mc_ytphy_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
 		return -EIO;
@@ -382,7 +414,7 @@ static int check_autonegotiation_completion(const struct device *dev)
 
 	data->state.is_up = (bmsr_reg & MII_BMSR_LINK_STATUS) != 0U;
 
-	LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
+	LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", data->phy_addr,
 		PHY_LINK_IS_SPEED_1000M(data->state.speed)
 			? "1000"
 			: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100" : "10"),
@@ -425,7 +457,6 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 			     enum phy_cfg_link_flag flags)
 {
 	struct mc_ytphy_data *const data = dev->data;
-	const struct mc_ytphy_config *const cfg = dev->config;
 	int ret = 0;
 
 	k_sem_take(&data->sem, K_FOREVER);
@@ -439,7 +470,7 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 	} else {
 		ret = phy_mii_cfg_link_autoneg(dev, adv_speeds, true);
 		if (ret >= 0) {
-			LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
+			LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", data->phy_addr);
 			data->autoneg_in_progress = true;
 			data->autoneg_timeout =
 				sys_timepoint_calc(K_MSEC(CONFIG_PHY_AUTONEG_TIMEOUT_MS));
@@ -449,7 +480,7 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 	}
 
 	if (ret == -EALREADY) {
-		LOG_DBG("PHY (%d) Link already configured", cfg->phy_addr);
+		LOG_DBG("PHY (%d) Link already configured", data->phy_addr);
 	}
 
 	k_sem_give(&data->sem);
@@ -494,9 +525,19 @@ static int mc_ytphy_link_cb_set(const struct device *dev, phy_callback_t cb, voi
 	return 0;
 }
 
+static bool mc_ytphy_id_matches(const struct device *dev, uint32_t *val)
+{
+	if (mc_ytphy_read(dev, MII_PHYID2R, val) < 0) {
+		return false;
+	}
+
+	return *val == PHY_ID_YT8521 || *val == PHY_ID_YT8531;
+}
+
 static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 {
 	const struct mc_ytphy_config *const config = dev->config;
+	struct mc_ytphy_data *const data = dev->data;
 	uint32_t val = 0;
 	bool found = false;
 
@@ -512,19 +553,65 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 		}
 	}
 
+	/* Optionally look for the PHY on the other MDIO addresses */
+	if (!found && config->phy_addr_scan) {
+		for (uint8_t addr = 0; addr < 32 && !found; addr++) {
+			data->phy_addr = addr;
+			found = mc_ytphy_id_matches(dev, &val);
+		}
+		if (found) {
+			LOG_WRN("PHY found at MDIO address %d, not at %d", data->phy_addr,
+				config->phy_addr);
+		} else {
+			data->phy_addr = config->phy_addr;
+		}
+	}
+
 	if (!found) {
-		LOG_ERR("PHY (%d) timeout to get PHY ID", config->phy_addr);
+		LOG_ERR("PHY (%d) timeout to get PHY ID", data->phy_addr);
 		return -EIO;
 	}
 
 	if (phy_id) {
 		*phy_id = val;
 	} else {
-		LOG_INF("PHY (%d) ID:0x%X", config->phy_addr, val);
+		LOG_INF("PHY (%d) ID:0x%X", data->phy_addr, val);
 	}
 
 	return 0;
 }
+
+#if YT_HAS_RESET_GPIO
+static int mc_ytphy_hw_reset(const struct device *dev)
+{
+	const struct mc_ytphy_config *const config = dev->config;
+	int ret;
+
+	if (config->reset_gpio.port == NULL) {
+		return 0;
+	}
+
+	if (!gpio_is_ready_dt(&config->reset_gpio)) {
+		LOG_ERR("PHY reset GPIO not ready");
+		return -ENODEV;
+	}
+
+	/* Assert reset (the pin is flagged active low in devicetree) */
+	ret = gpio_pin_configure_dt(&config->reset_gpio, GPIO_OUTPUT_ACTIVE);
+	if (ret) {
+		return ret;
+	}
+	k_msleep(YT_RESET_ASSERT_MS);
+
+	ret = gpio_pin_set_dt(&config->reset_gpio, 0);
+	if (ret) {
+		return ret;
+	}
+	k_msleep(YT_RESET_RELEASE_MS);
+
+	return 0;
+}
+#endif /* YT_HAS_RESET_GPIO */
 
 static int mc_ytphy_init(const struct device *dev)
 {
@@ -536,6 +623,14 @@ static int mc_ytphy_init(const struct device *dev)
 	data->state.is_up = false;
 	data->dev = dev;
 	data->cb = NULL;
+	data->phy_addr = ((const struct mc_ytphy_config *)dev->config)->phy_addr;
+
+#if YT_HAS_RESET_GPIO
+	ret = mc_ytphy_hw_reset(dev);
+	if (ret) {
+		return ret;
+	}
+#endif
 
 	if (mc_ytphy_get_id(dev, NULL)) {
 		return -EIO;
@@ -592,13 +687,23 @@ static DEVICE_API(ethphy, mc_ytphy_driver_api) = {
 	.write = mc_ytphy_write,
 };
 
+#if YT_HAS_RESET_GPIO
+#define MC_YTPHY_RESET_GPIO(n) .reset_gpio = GPIO_DT_SPEC_INST_GET_OR(n, reset_gpios, {0}),
+#else
+#define MC_YTPHY_RESET_GPIO(n)
+#endif
+
 #define MC_YTPHY_CONFIG(n)                                                                         \
 	static const struct mc_ytphy_config mc_ytphy_config_##n = {                                \
 		.phy_addr = DT_INST_REG_ADDR(n),                                                   \
 		.mdio = DEVICE_DT_GET(DT_INST_BUS(n)),                                             \
 		.rx_delay_sel = DT_INST_PROP_OR(n, motorcomm_rx_delay_sel, 0),                     \
 		.tx_delay_sel = DT_INST_PROP_OR(n, motorcomm_tx_delay_sel, 0),                     \
+		.tx_delay_sel_fe = DT_INST_PROP_OR(n, motorcomm_tx_delay_sel_fe, -1),              \
+		.rxc_delay_enable = DT_INST_PROP(n, motorcomm_rxc_delay_enable),                   \
+		.phy_addr_scan = DT_INST_PROP(n, motorcomm_phy_addr_scan),                         \
 		.default_speeds = PHY_INST_GENERATE_DEFAULT_SPEEDS(n),                             \
+		MC_YTPHY_RESET_GPIO(n)                                                             \
 	};
 
 #define MC_YTPHY_DATA(n)                                                                           \

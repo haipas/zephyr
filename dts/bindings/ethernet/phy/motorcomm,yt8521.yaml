@@ -8,6 +8,13 @@ compatible: "motorcomm,yt8521"
 include: ethernet-phy-common.yaml
 
 properties:
+  reset-gpios:
+    type: phandle-array
+    description: |
+      GPIO connected to the PHY reset pin (active low, flag it
+      GPIO_ACTIVE_LOW). When present, the driver holds the PHY in reset
+      for 10 ms and waits 500 ms after releasing it before accessing the
+      PHY registers.
   motorcomm,rx-delay-sel:
     type: int
     description: |
@@ -18,6 +25,23 @@ properties:
     description: |
       RGMII RX_CLK delay train configuration, about 150ps per step.
       See RGMII_Config1 (EXT_0xA003) register for details
+  motorcomm,tx-delay-sel-fe:
+    type: int
+    description: |
+      RGMII TX_CLK delay train configuration for 10/100 Mbit/s, about
+      150ps per step (tx_delay_sel_fe, bits [7:4] of RGMII_Config1,
+      EXT_0xA003). Left at its reset value when absent.
+  motorcomm,rxc-delay-enable:
+    type: boolean
+    description: |
+      Enable the fixed ~2 ns RX_CLK delay (rxc_dly_en, bit 8 of
+      Chip_Config, EXT_0xA001). When absent the delay is disabled.
+  motorcomm,phy-addr-scan:
+    type: boolean
+    description: |
+      If the PHY does not answer at the address given in reg, scan the
+      MDIO bus (addresses 0..31) for a YT8521/YT8531 and use the first one
+      found, like ESP-IDF's PHY address auto-detection.
   default-speeds:
     default: ["10BASE Half-Duplex", "10BASE Full-Duplex", "100BASE Half-Duplex",
               "100BASE Full-Duplex", "1000BASE Half-Duplex", "1000BASE Full-Duplex"]

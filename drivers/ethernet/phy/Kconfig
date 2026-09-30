@@ -193,6 +193,8 @@ config PHY_MOTORCOMM_YT8521
 	default y
 	depends on DT_HAS_MOTORCOMM_YT8521_ENABLED || DT_HAS_MOTORCOMM_YT8531_ENABLED
 	select MDIO
+	select GPIO if ($(dt_compat_any_has_prop,$(DT_COMPAT_MOTORCOMM_YT8521),reset-gpios) || \
+		    $(dt_compat_any_has_prop,$(DT_COMPAT_MOTORCOMM_YT8531),reset-gpios))
 	help
 	  Enable Motorcomm YT8521/YT8531 Ethernet PHY Driver.
 	  This driver supports both YT8521 and YT8531 PHY chips.
