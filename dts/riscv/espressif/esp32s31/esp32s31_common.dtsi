@@ -429,6 +429,30 @@
 			ghwcfg4 = <0xde11aa30>;
 		};
 
+		/*
+		 * GMAC (DesignWare MAC 10/100/1000): MAC registers at
+		 * 0x20350000, PTP at +0x700, DMA at +0x1000 (the EMAC_MAC,
+		 * EMAC_PTP and EMAC_DMA symbols of the hal linker script);
+		 * the next peripheral (PVT) starts at 0x20354000. The EMAC
+		 * interrupt is the SBD source (ETS_ETH_MAC_INTR_SOURCE).
+		 */
+		eth: ethernet@20350000 {
+			compatible = "espressif,esp32-eth", "snps,dwmac";
+			reg = <0x20350000 0x4000>;
+			interrupts = <SBD_INTR_SOURCE IRQ_DEFAULT_PRIORITY 0>;
+			interrupt-parent = <&intc>;
+			clocks = <&clock ESP32_EMAC_MODULE>;
+			clock-names = "mac";
+			status = "disabled";
+
+			mdio: mdio {
+				compatible = "snps,dwmac-mdio";
+				status = "disabled";
+				#address-cells = <1>;
+				#size-cells = <0>;
+			};
+		};
+
 		spi2: spi@2038f000 {
 			compatible = "espressif,esp32-spi";
 			reg = <0x2038f000 DT_SIZE_K(4)>;
