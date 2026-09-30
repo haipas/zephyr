@@ -5,6 +5,7 @@
  */
 
 #include <soc.h>
+#include <soc/hp_system_reg.h>
 #include <soc_init.h>
 #include <flash_init.h>
 #include <esp_err.h>
@@ -28,10 +29,12 @@
 extern void esp_reset_reason_init(void);
 extern FUNC_NORETURN void z_cstart(void);
 
-static void core_intr_matrix_clear(void)
+void esp_core_intr_matrix_clear(void)
 {
+	unsigned int core_id = esp_cpu_get_core_id();
+
 	for (int i = 0; i < ETS_MAX_INTR_SOURCE; i++) {
-		interrupt_clic_ll_route(0, i, ETS_INVALID_INUM);
+		interrupt_clic_ll_route(core_id, i, ETS_INVALID_INUM);
 	}
 
 	for (int i = 0; i < 32; i++) {
@@ -52,7 +55,7 @@ void IRAM_ATTR __esp_platform_app_start(void)
 			 : "t0");
 #endif
 
-	core_intr_matrix_clear();
+	esp_core_intr_matrix_clear();
 
 	esp_reset_reason_init();
 
@@ -65,6 +68,15 @@ void IRAM_ATTR __esp_platform_app_start(void)
 	/* PSRAM is brought up by a PRE_KERNEL_1 SYS_INIT, after the
 	 * regulator driver has enabled the dedicated PSRAM LDO.
 	 */
+
+#if CONFIG_MP_MAX_NUM_CPUS > 1
+	extern void esp_appcpu_start(void);
+
+	/* Keep the WFI clock running so an idle core in WFI still takes interrupts. */
+	REG_SET_BIT(HP_SYSTEM_CPU_WAITI_CONF_REG, HP_SYSTEM_CPU_WAIT_MODE_FORCE_ON);
+
+	esp_appcpu_start();
+#endif
 
 	z_cstart();
 

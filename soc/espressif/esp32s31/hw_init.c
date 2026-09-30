@@ -78,10 +78,12 @@ int hardware_init(void)
 	/*
 	 * Cache and MMU must be initialized before any flash access.
 	 * ESP32-S31 uses a unified L1 cache with a flat HP SRAM region,
-	 * so only the core count needs to be supplied.
+	 * so only the core count needs to be supplied. Each core has its own
+	 * L1 instruction cache bus; CPU1 executes from flash under SMP, so
+	 * open its bus too when a second CPU is configured.
 	 */
 	cache_hal_config_t cache_config = {
-		.core_nums = 1,
+		.core_nums = CONFIG_MP_MAX_NUM_CPUS,
 	};
 	cache_hal_init(&cache_config);
 
