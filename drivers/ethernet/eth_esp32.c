@@ -36,9 +36,42 @@ LOG_MODULE_REGISTER(eth_esp32, CONFIG_ETHERNET_LOG_LEVEL);
 #define MAC_RESET_TIMEOUT_MS 100
 #define ETH_CRC_LENGTH       4
 
+/*
+ * RGMII (1000 Mbit/s capable) is only available on SoCs whose EMAC supports
+ * 1000M (ESP32-S31). The rgmii-id/-txid/-rxid variants only tell where the
+ * RGMII clock delays are inserted; the MAC side adds none, so they are
+ * handled like plain rgmii and the delays are configured in the PHY.
+ */
+#define ETH_ESP32_PHY_IS_RGMII                                                                     \
+	(DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, rgmii) ||                                  \
+	 DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, rgmii_id) ||                               \
+	 DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, rgmii_txid) ||                             \
+	 DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, rgmii_rxid))
+
+#if defined(SOC_EMAC_SUPPORT_1000M) && SOC_EMAC_SUPPORT_1000M && ETH_ESP32_PHY_IS_RGMII
+#define ETH_ESP32_RGMII 1
+#else
+#define ETH_ESP32_RGMII 0
+#endif
+
+#if ETH_ESP32_RGMII && DT_NODE_HAS_PROP(DT_INST_PHANDLE(0, phy_handle), reset_gpios)
+#include <zephyr/drivers/gpio.h>
+#define ETH_ESP32_RGMII_PHY_RESET_GPIO 1
+#else
+#define ETH_ESP32_RGMII_PHY_RESET_GPIO 0
+#endif
+
+#if ETH_ESP32_RGMII
+/* Allow for a PHY that only starts to drive the RX clock after its reset */
+#define ETH_ESP32_MAC_RESET_TIMEOUT_MS 500
+#else
+#define ETH_ESP32_MAC_RESET_TIMEOUT_MS MAC_RESET_TIMEOUT_MS
+#endif
+
 BUILD_ASSERT(DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, rmii) ||
-	     DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, mii),
-	     "Unsupported PHY interface type. Only RMII and MII are supported.");
+	     DT_INST_ENUM_HAS_VALUE(0, phy_connection_type, mii) || ETH_ESP32_RGMII,
+	     "Unsupported PHY interface type. Only RMII and MII are supported, "
+	     "and RGMII on SoCs with a 1000 Mbit/s capable EMAC.");
 
 /*
  * On SoCs with L2 cache (ESP32-P4), DMA data is accessed by the CPU
@@ -81,6 +114,10 @@ struct eth_esp32_dev_data {
 #endif
 	struct k_sem int_sem;
 	struct k_sem tx_sem;
+#if ETH_ESP32_RGMII
+	/* EMAC reference clock the RGMII TX clock is divided from */
+	uint32_t rgmii_pll_hz;
+#endif
 
 	K_KERNEL_STACK_MEMBER(rx_thread_stack, CONFIG_ETH_ESP32_RX_THREAD_STACK_SIZE);
 	struct k_thread rx_thread;
@@ -450,7 +487,11 @@ static uint32_t eth_esp32_receive_frame(struct eth_esp32_dev_data *dev_data, uin
 static enum ethernet_hw_caps eth_esp32_caps(const struct device *dev __unused,
 					    struct net_if *iface __unused)
 {
+#if ETH_ESP32_RGMII
+	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE | ETHERNET_LINK_1000BASE;
+#else
 	return ETHERNET_LINK_10BASE | ETHERNET_LINK_100BASE;
+#endif
 }
 
 static int eth_esp32_set_config(const struct device *dev,
@@ -609,11 +650,67 @@ static int generate_mac_addr(uint8_t mac_addr[6])
 	return res;
 }
 
+#if ETH_ESP32_RGMII
+/*
+ * Follow the PHY's link speed: RGMII needs a TX clock of 125/25/2.5 MHz for
+ * 1000/100/10 Mbit/s (the RX clock comes from the PHY), and the MAC port
+ * speed and duplex must match. The MAC transmitter and receiver are
+ * disabled while the clock and speed change.
+ */
+static void eth_esp32_rgmii_set_link(struct eth_esp32_dev_data *dev_data,
+				     enum phy_link_speed speed)
+{
+	eth_speed_t mac_speed;
+	eth_duplex_t duplex;
+	uint32_t clk_hz;
+	int mbps;
+
+	if (PHY_LINK_IS_SPEED_1000M(speed)) {
+		mac_speed = ETH_SPEED_1000M;
+		clk_hz = ESP32_RGMII_CLK_1000M_HZ;
+		mbps = 1000;
+	} else if (PHY_LINK_IS_SPEED_100M(speed)) {
+		mac_speed = ETH_SPEED_100M;
+		clk_hz = ESP32_RGMII_CLK_100M_HZ;
+		mbps = 100;
+	} else {
+		mac_speed = ETH_SPEED_10M;
+		clk_hz = ESP32_RGMII_CLK_10M_HZ;
+		mbps = 10;
+	}
+	duplex = PHY_LINK_IS_FULL_DUPLEX(speed) ? ETH_DUPLEX_FULL : ETH_DUPLEX_HALF;
+
+	emac_ll_transmit_enable(dev_data->hal.mac_regs, false);
+	emac_ll_receive_enable(dev_data->hal.mac_regs, false);
+
+	if (esp32_emac_rgmii_set_tx_clk(&dev_data->hal, dev_data->rgmii_pll_hz, clk_hz) != 0) {
+		LOG_ERR("Cannot derive the %u Hz RGMII clock from %u Hz", clk_hz,
+			dev_data->rgmii_pll_hz);
+	}
+	emac_hal_set_speed(&dev_data->hal, mac_speed);
+	emac_hal_set_duplex(&dev_data->hal, duplex);
+
+	emac_ll_receive_enable(dev_data->hal.mac_regs, true);
+	emac_ll_transmit_enable(dev_data->hal.mac_regs, true);
+
+	LOG_INF("RGMII link %d Mbit/s, %s duplex", mbps,
+		duplex == ETH_DUPLEX_FULL ? "full" : "half");
+}
+#endif /* ETH_ESP32_RGMII */
+
 static void phy_link_state_changed(const struct device *phy_dev __unused,
 				   struct phy_link_state *state,
 				   void *user_data)
 {
 	struct net_if *iface = (struct net_if *)user_data;
+
+#if ETH_ESP32_RGMII
+	if (state->is_up) {
+		const struct device *dev = net_if_get_device(iface);
+
+		eth_esp32_rgmii_set_link(dev->data, state->speed);
+	}
+#endif
 
 	net_eth_carrier_set(iface, state->is_up);
 }
@@ -703,16 +800,65 @@ int eth_esp32_initialize(const struct device *dev)
 		esp32_emac_iomux_rmii_clk_input(rmii_clk_gpio);
 		emac_hal_clock_enable_rmii_input(&dev_data->hal);
 #endif
+	} else if (ETH_ESP32_RGMII) {
+#if ETH_ESP32_RGMII
+		int gpios[ESP_RGMII_SLOT_COUNT];
+
+		res = esp32_emac_rgmii_pinctrl_gpios(cfg->pcfg, gpios);
+		if (res != 0) {
+			goto err;
+		}
+
+		/* Data plane and RX clock first, the TX clock pad once it runs */
+		for (int slot = 0; slot < ESP_RGMII_SLOT_COUNT; slot++) {
+			if (slot == ESP_RGMII_TX_CLK) {
+				continue;
+			}
+			res = esp32_emac_rgmii_pad_init(slot, gpios[slot]);
+			if (res != 0) {
+				LOG_ERR("RGMII signal %d cannot use GPIO %d", slot, gpios[slot]);
+				goto err;
+			}
+		}
+
+		res = esp32_emac_rgmii_clock_init(&dev_data->hal, &dev_data->rgmii_pll_hz);
+		if (res != 0) {
+			goto err;
+		}
+
+		res = esp32_emac_rgmii_pad_init(ESP_RGMII_TX_CLK, gpios[ESP_RGMII_TX_CLK]);
+		if (res != 0) {
+			LOG_ERR("RGMII TX clock cannot use GPIO %d", gpios[ESP_RGMII_TX_CLK]);
+			goto err;
+		}
+
+		emac_hal_clock_enable_rgmii(&dev_data->hal);
+#endif /* ETH_ESP32_RGMII */
 	} else { /* phy_connection_type: mii */
 		esp32_emac_iomux_init_mii();
 		emac_hal_clock_enable_mii(&dev_data->hal);
 	}
 
+#if ETH_ESP32_RGMII_PHY_RESET_GPIO
+	/*
+	 * The MAC software reset only completes while the PHY supplies the
+	 * RGMII RX clock, but the PHY driver (which pulses the PHY reset) is
+	 * initialized after this driver. Release the PHY reset line now so
+	 * the PHY runs; ESP-IDF likewise resets the PHY before the MAC.
+	 */
+	const struct gpio_dt_spec phy_reset =
+		GPIO_DT_SPEC_GET(DT_INST_PHANDLE(0, phy_handle), reset_gpios);
+
+	if (gpio_is_ready_dt(&phy_reset)) {
+		gpio_pin_configure_dt(&phy_reset, GPIO_OUTPUT_INACTIVE);
+	}
+#endif
+
 	/* Reset mac registers and wait until ready */
 	emac_hal_reset(&dev_data->hal);
 	bool reset_success = false;
 
-	for (uint32_t t_ms = 0; t_ms < MAC_RESET_TIMEOUT_MS; t_ms += 10) {
+	for (uint32_t t_ms = 0; t_ms < ETH_ESP32_MAC_RESET_TIMEOUT_MS; t_ms += 10) {
 		/* Busy wait rather than sleep in case kernel is not yet initialized */
 		k_busy_wait(10 * 1000);
 		if (emac_hal_is_reset_done(&dev_data->hal)) {
@@ -721,12 +867,29 @@ int eth_esp32_initialize(const struct device *dev)
 		}
 	}
 	if (!reset_success) {
+		LOG_ERR("MAC reset timeout (no RX/TX clock from the PHY?)");
 		res = -ETIMEDOUT;
 		goto err;
 	}
 
+#if defined(CONFIG_SOC_SERIES_ESP32S31)
+	/*
+	 * The module and software resets above also cleared the MDC clock
+	 * range set by the MDIO driver; restore it from the CSR clock.
+	 */
+	uint32_t csr_hz;
+
+	if (esp_clk_tree_src_get_freq_hz(emac_ll_get_csr_clk_src(),
+					 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &csr_hz) == ESP_OK) {
+		emac_hal_set_csr_clock_range(&dev_data->hal, csr_hz);
+	}
+
+	/* 16-beat DMA bursts, the ESP-IDF default for the ESP32-S31 */
+	emac_hal_dma_config_t dma_config = { .dma_burst_len = ETH_DMA_BURST_LEN_16 };
+#else
 	/* Set dma_burst_len as ETH_DMA_BURST_LEN_32 by default */
 	emac_hal_dma_config_t dma_config = { .dma_burst_len = 0 };
+#endif
 
 	eth_esp32_reset_desc_chain(dev_data);
 	emac_hal_init_mac_default(&dev_data->hal);

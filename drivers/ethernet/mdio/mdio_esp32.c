@@ -145,7 +145,19 @@ static int mdio_esp32_initialize(const struct device *dev)
 #endif
 
 	/* Init MDIO clock */
+#if defined(CONFIG_SOC_SERIES_ESP32S31)
+	/* The MDC is divided from the EMAC CSR clock, which is SYS_CLK here */
+	uint32_t csr_hz;
+
+	if (esp_clk_tree_src_get_freq_hz(emac_ll_get_csr_clk_src(),
+					 ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX, &csr_hz) != ESP_OK) {
+		res = -EIO;
+		goto err;
+	}
+	emac_hal_set_csr_clock_range(&dev_data->hal, csr_hz);
+#else
 	emac_hal_set_csr_clock_range(&dev_data->hal, esp_clk_apb_freq());
+#endif
 
 	return 0;
 
