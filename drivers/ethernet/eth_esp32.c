@@ -54,13 +54,6 @@ LOG_MODULE_REGISTER(eth_esp32, CONFIG_ETHERNET_LOG_LEVEL);
 #define ETH_ESP32_RGMII 0
 #endif
 
-#if ETH_ESP32_RGMII && DT_NODE_HAS_PROP(DT_INST_PHANDLE(0, phy_handle), reset_gpios)
-#include <zephyr/drivers/gpio.h>
-#define ETH_ESP32_RGMII_PHY_RESET_GPIO 1
-#else
-#define ETH_ESP32_RGMII_PHY_RESET_GPIO 0
-#endif
-
 #if ETH_ESP32_RGMII
 /* Allow for a PHY that only starts to drive the RX clock after its reset */
 #define ETH_ESP32_MAC_RESET_TIMEOUT_MS 500
@@ -754,17 +747,6 @@ int eth_esp32_initialize(const struct device *dev)
 	/* Initialize HAL context */
 	emac_hal_init(&dev_data->hal);
 
-	/* Configure ISR */
-	res = esp_intr_alloc(
-		DT_IRQ_BY_IDX(DT_NODELABEL(eth), 0, irq),
-		ESP_PRIO_TO_FLAGS(DT_IRQ_BY_IDX(DT_NODELABEL(eth), 0, priority)) |
-			ESP_INT_FLAGS_CHECK(DT_IRQ_BY_IDX(DT_NODELABEL(eth), 0, flags)) |
-			ESP_INTR_FLAG_IRAM,
-		eth_esp32_isr, (void *)(uintptr_t)dev, NULL);
-	if (res != 0) {
-		goto err;
-	}
-
 	/* Configure phy for Media-Independent Interface (MII) or
 	 * Reduced Media-Independent Interface (RMII) mode
 	 */
@@ -839,22 +821,13 @@ int eth_esp32_initialize(const struct device *dev)
 		emac_hal_clock_enable_mii(&dev_data->hal);
 	}
 
-#if ETH_ESP32_RGMII_PHY_RESET_GPIO
 	/*
-	 * The MAC software reset only completes while the PHY supplies the
-	 * RGMII RX clock, but the PHY driver (which pulses the PHY reset) is
-	 * initialized after this driver. Release the PHY reset line now so
-	 * the PHY runs; ESP-IDF likewise resets the PHY before the MAC.
+	 * Reset mac registers and wait until ready. With RGMII the reset only
+	 * completes while the PHY drives the RX clock, and a register access
+	 * issued before that stalls the bus for good. Leave the PHY reset line
+	 * alone here (a pulse stops the RX clock until the link is back, which
+	 * takes seconds); the PHY driver resets the PHY after this.
 	 */
-	const struct gpio_dt_spec phy_reset =
-		GPIO_DT_SPEC_GET(DT_INST_PHANDLE(0, phy_handle), reset_gpios);
-
-	if (gpio_is_ready_dt(&phy_reset)) {
-		gpio_pin_configure_dt(&phy_reset, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-
-	/* Reset mac registers and wait until ready */
 	emac_hal_reset(&dev_data->hal);
 	bool reset_success = false;
 
@@ -869,6 +842,25 @@ int eth_esp32_initialize(const struct device *dev)
 	if (!reset_success) {
 		LOG_ERR("MAC reset timeout (no RX/TX clock from the PHY?)");
 		res = -ETIMEDOUT;
+		goto err;
+	}
+
+	/*
+	 * Only now take the interrupt: an ISR during the reset would read the
+	 * DMA status while the MAC is in reset, and the MAC interrupt sources
+	 * (e.g. RGMII link status) cannot be cleared through the DMA status,
+	 * so mask them before the line is enabled.
+	 */
+	emac_ll_disable_corresponding_emac_intr(dev_data->hal.mac_regs, 0xFFFFFFFF);
+	emac_ll_clear_all_pending_intr(dev_data->hal.dma_regs);
+
+	res = esp_intr_alloc(
+		DT_IRQ_BY_IDX(DT_NODELABEL(eth), 0, irq),
+		ESP_PRIO_TO_FLAGS(DT_IRQ_BY_IDX(DT_NODELABEL(eth), 0, priority)) |
+			ESP_INT_FLAGS_CHECK(DT_IRQ_BY_IDX(DT_NODELABEL(eth), 0, flags)) |
+			ESP_INTR_FLAG_IRAM,
+		eth_esp32_isr, (void *)(uintptr_t)dev, NULL);
+	if (res != 0) {
 		goto err;
 	}
 
