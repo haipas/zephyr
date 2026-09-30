@@ -81,7 +81,7 @@ config ESP_SPIRAM_SIZE
 
 choice SPIRAM_SPEED
 	prompt "Set RAM clock speed"
-	default SPIRAM_SPEED_200M if SOC_SERIES_ESP32P4
+	default SPIRAM_SPEED_200M if SOC_SERIES_ESP32P4 || SOC_SERIES_ESP32S31
 	default SPIRAM_SPEED_40M
 	help
 	  Select the speed for the SPI RAM chip.
@@ -102,6 +102,10 @@ config SPIRAM_SPEED_80M
 	bool "80MHz clock speed"
 	depends on ESPTOOLPY_FLASHFREQ_80M || SOC_SERIES_ESP32P4
 
+config SPIRAM_SPEED_100M
+	bool "100MHz clock speed"
+	depends on SOC_SERIES_ESP32S31
+
 config SPIRAM_SPEED_120M
 	bool "120MHz clock speed"
 	depends on SPIRAM_MODE_QUAD && (SOC_SERIES_ESP32C5 || SOC_SERIES_ESP32C61 || \
@@ -110,13 +114,22 @@ config SPIRAM_SPEED_120M
 
 config SPIRAM_SPEED_200M
 	bool "200MHz clock speed"
-	depends on SOC_SERIES_ESP32P4
+	depends on SOC_SERIES_ESP32P4 || SOC_SERIES_ESP32S31
+
+config SPIRAM_SPEED_250M
+	bool "250MHz clock speed"
+	depends on SOC_SERIES_ESP32S31
+	help
+	  MPLL runs at 500 MHz. Needed when gigabit RGMII Ethernet shares the
+	  MPLL (it derives 125 MHz from 500 MHz, not from 400 MHz).
 
 endchoice # SPIRAM_SPEED
 
 config SPIRAM_SPEED
 	int
+	default 250 if SPIRAM_SPEED_250M
 	default 200 if SPIRAM_SPEED_200M
+	default 100 if SPIRAM_SPEED_100M
 	default 120 if SPIRAM_SPEED_120M
 	default 80 if SPIRAM_SPEED_80M
 	default 40 if SPIRAM_SPEED_40M
