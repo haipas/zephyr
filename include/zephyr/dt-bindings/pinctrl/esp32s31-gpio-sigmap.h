@@ -273,6 +273,10 @@
 #define ESP_PARLIO_TX_DATA8_OUT      196 /**< PARLIO TX data 8 output */
 #define ESP_PARLIO_TX_DATA9_OUT      197 /**< PARLIO TX data 9 output */
 
+#define ESP_EMAC_MDI_I 107 /**< EMAC SMI MDIO data input (GMII_MDI) */
+#define ESP_EMAC_MDC_O 108 /**< EMAC SMI MDC clock output (GMII_MDC) */
+#define ESP_EMAC_MDO_O 109 /**< EMAC SMI MDIO data output (GMII_MDO) */
+
 #define ESP_SIG_GPIO_OUT 256 /**< GPIO output signal */
 
 /** @endcond */

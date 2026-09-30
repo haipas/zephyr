@@ -75,6 +75,45 @@
 	 (((pin) & ESP32_PIN_NUM_MASK) << ESP32_PIN_NUM_SHIFT))
 
 /**
+ * @brief Ethernet RGMII pin encoding.
+ *
+ * Like RMII, the RGMII data plane and its clocks use dedicated EMAC IOMUX
+ * functions. An RGMII cell carries the signal slot (same field as the RMII
+ * slot) and the GPIO number; ESP32_RGMII_MARKER distinguishes these cells
+ * from ESP32_PINMUX() and ESP32_RMII_PINMUX() cells.
+ */
+#define ESP32_RGMII_MARKER BIT(29) /**< Marks a cell as an RGMII pinmux */
+
+/**
+ * @name Ethernet RGMII signal slots
+ * @{
+ */
+#define ESP_RGMII_TX_CLK     0  /**< RGMII transmit clock (MAC output) */
+#define ESP_RGMII_TX_CTL     1  /**< RGMII transmit control */
+#define ESP_RGMII_TXD0       2  /**< RGMII transmit data 0 */
+#define ESP_RGMII_TXD1       3  /**< RGMII transmit data 1 */
+#define ESP_RGMII_TXD2       4  /**< RGMII transmit data 2 */
+#define ESP_RGMII_TXD3       5  /**< RGMII transmit data 3 */
+#define ESP_RGMII_RX_CLK     6  /**< RGMII receive clock (MAC input) */
+#define ESP_RGMII_RX_CTL     7  /**< RGMII receive control */
+#define ESP_RGMII_RXD0       8  /**< RGMII receive data 0 */
+#define ESP_RGMII_RXD1       9  /**< RGMII receive data 1 */
+#define ESP_RGMII_RXD2       10 /**< RGMII receive data 2 */
+#define ESP_RGMII_RXD3       11 /**< RGMII receive data 3 */
+#define ESP_RGMII_SLOT_COUNT 12 /**< Number of ESP_RGMII_* signal slots above */
+/** @} */
+
+/**
+ * @brief Construct an Ethernet RGMII pinmux value
+ *
+ * @param pin   GPIO pin number
+ * @param slot  RGMII signal slot (ESP_RGMII_*)
+ */
+#define ESP32_RGMII_PINMUX(pin, slot)                                                              \
+	(ESP32_RGMII_MARKER | (((slot) & ESP32_RMII_SLOT_MASK) << ESP32_RMII_SLOT_SHIFT) |         \
+	 (((pin) & ESP32_PIN_NUM_MASK) << ESP32_PIN_NUM_SHIFT))
+
+/**
  * @brief ESP32 pin configuration bit field.
  *
  * This field encodes pin configuration options used by the ESP32
