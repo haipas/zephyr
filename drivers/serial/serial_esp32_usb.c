@@ -123,6 +123,16 @@ static int serial_esp32_usb_init(const struct device *dev)
 
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 
+/* Size of the USB Serial/JTAG RX FIFO (one full-speed bulk packet) */
+#define USBSERIAL_RX_FIFO_SIZE (64)
+
+static inline bool serial_esp32_usb_rx_irq_pending(void)
+{
+	return (usb_serial_jtag_ll_get_intr_ena_status() &
+		USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT) &&
+	       usb_serial_jtag_ll_rxfifo_data_available();
+}
+
 static int serial_esp32_usb_fifo_fill(const struct device *dev, const uint8_t *tx_data, int len)
 {
 	ARG_UNUSED(dev);
@@ -172,10 +182,21 @@ static int serial_esp32_usb_irq_tx_ready(const struct device *dev)
 
 static void serial_esp32_usb_irq_rx_enable(const struct device *dev)
 {
-	ARG_UNUSED(dev);
+	struct serial_esp32_usb_data *data = dev->data;
 
 	usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
 	usb_serial_jtag_ll_ena_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
+
+	/*
+	 * Data already waiting in the RX FIFO raises no new packet interrupt,
+	 * so hand it to the callback now, like irq_tx_enable() does for TX.
+	 */
+	if (data->irq_cb != NULL && usb_serial_jtag_ll_rxfifo_data_available()) {
+		unsigned int key = irq_lock();
+
+		data->irq_cb(dev, data->irq_cb_data);
+		arch_irq_unlock(key);
+	}
 }
 
 static void serial_esp32_usb_irq_rx_disable(const struct device *dev)
@@ -242,8 +263,24 @@ static void IRAM_ATTR serial_esp32_usb_isr(void *arg)
 	}
 	usb_serial_jtag_ll_clr_intsts_mask(uart_intr_status);
 
-	if (data->irq_cb != NULL) {
+	if (data->irq_cb == NULL) {
+		return;
+	}
+
+	/*
+	 * SERIAL_OUT_RECV_PKT fires once per received USB packet, not while
+	 * the RX FIFO holds data. A callback that reads fewer bytes than the
+	 * packet carried would never be called again for the rest, and the
+	 * controller NAKs further host data until the FIFO is drained. Keep
+	 * calling it while RX is enabled and data is pending, as the UART
+	 * interrupt API expects; bounded by the FIFO size.
+	 */
+	for (int i = 0; i < USBSERIAL_RX_FIFO_SIZE; i++) {
 		data->irq_cb(dev, data->irq_cb_data);
+
+		if (!serial_esp32_usb_rx_irq_pending()) {
+			break;
+		}
 	}
 }
 
