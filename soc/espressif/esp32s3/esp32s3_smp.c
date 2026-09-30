@@ -37,6 +37,14 @@ struct cpustart_rec {
 static volatile struct cpustart_rec *start_rec;
 static volatile DRAM_ATTR bool s_appcpu_ready;
 
+/* Half a second for CPU1 to seed CCOUNT, and again to reach the scheduler. A
+ * core that never comes up must end in a fatal error -- and, with a rebooting
+ * fatal handler, in a reset that lets MCUboot revert an unconfirmed image --
+ * not in a silent spin before any watchdog is armed.
+ */
+#define APPCPU_START_TIMEOUT_CYCLES (CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC / 2)
+#define APPCPU_READY_TIMEOUT_US     500000U
+
 /* Referenced by name from the asm entry stub. */
 void *appcpu_top;
 
@@ -130,6 +138,7 @@ void arch_cpu_start(int cpu_num, k_thread_stack_t *stack, int sz, arch_cpustart_
 	int vb;
 	volatile int alive_flag;
 	uint32_t ccount;
+	uint32_t start_ccount;
 
 	__ASSERT(cpu_num == 1, "ESP32S3 supports only two CPUs");
 
@@ -147,6 +156,7 @@ void arch_cpu_start(int cpu_num, k_thread_stack_t *stack, int sz, arch_cpustart_
 	start_rec = &sr;
 
 	__asm__ volatile("rsr.CCOUNT %0" : "=r"(sr.ccount));
+	start_ccount = sr.ccount;
 
 	release_appcpu((void *)z_appcpu_asm_entry);
 
@@ -154,6 +164,10 @@ void arch_cpu_start(int cpu_num, k_thread_stack_t *stack, int sz, arch_cpustart_
 	while (alive_flag == 0) {
 		__asm__ volatile("rsr.CCOUNT %0" : "=r"(ccount));
 		sr.ccount = ccount;
+		if ((uint32_t)(ccount - start_ccount) > APPCPU_START_TIMEOUT_CYCLES) {
+			printk("esp32s3 smp: cpu1 did not start\n");
+			k_panic();
+		}
 	}
 }
 
@@ -248,8 +262,12 @@ static int smp_bringup_appcpu(void)
 
 	k_smp_cpu_start(1, appcpu_ready, NULL);
 
-	while (!s_appcpu_ready) {
-		arch_nop();
+	for (uint32_t waited_us = 0U; !s_appcpu_ready; waited_us += 10U) {
+		if (waited_us > APPCPU_READY_TIMEOUT_US) {
+			printk("esp32s3 smp: cpu1 did not reach the scheduler\n");
+			k_panic();
+		}
+		k_busy_wait(10);
 	}
 	barrier_dmem_fence_full();
 
