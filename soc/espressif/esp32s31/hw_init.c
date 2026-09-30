@@ -9,6 +9,7 @@
 #include <esp_cpu.h>
 #include <soc/rtc.h>
 #include <esp_rom_sys.h>
+#include <rom/ets_sys.h>
 
 #include <hal/cache_hal.h>
 #include <hal/mmu_hal.h>
@@ -34,6 +35,13 @@ const static char *TAG = "hw_init";
 int hardware_init(void)
 {
 	int err = 0;
+
+	/* CPU1 starts from the ROM boot-address register, which survives a
+	 * warm reset. Clear it and reset CPU1 into the ROM wait loop, so a
+	 * stale entry left by a previous SMP image is never executed.
+	 */
+	ets_set_appcpu_boot_addr(0);
+	esp_cpu_reset(1);
 
 	soc_hw_init();
 	ana_reset_config();
