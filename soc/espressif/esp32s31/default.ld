@@ -544,6 +544,13 @@ SECTIONS
   *libble_app.a:(.high_perf_code_iram1 .high_perf_code_iram1.*)
   *libble_app.a:(.bt_iram_text .bt_iram_text.*)
 
+  /* BTDM controller sleep code (ESP-IDF places it in IRAM unless the
+   * controller runs from flash only).
+   */
+  *libble_app.a:(.iram_sleep .iram_sleep.* .iram_sleep_adv .iram_sleep_adv.*)
+  *libble_app.a:(.iram_sleep_conn .iram_sleep_conn.* .iram_single_sleep .iram_single_sleep.*)
+  *libbtdm_common.a:(.iram_btslp .iram_btslp.*)
+
     . = ALIGN(4) + 16;
   } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
