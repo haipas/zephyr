@@ -83,6 +83,16 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 #define YT8521_SCR_SYNCE_ENABLE BIT(5)
 
 static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_state *state);
+/* PHYID2 bits 3:0 are the silicon revision (the S31 board has a YT8531 rev 0xB) */
+#define PHY_ID_REV_MASK 0x0000000F
+
+static inline bool mc_ytphy_is_known_id(uint32_t val)
+{
+	val &= ~PHY_ID_REV_MASK;
+
+	return val == (PHY_ID_YT8521 & ~PHY_ID_REV_MASK) || val == (PHY_ID_YT8531 & ~PHY_ID_REV_MASK);
+}
+
 
 struct mc_ytphy_config {
 	uint8_t phy_addr;
@@ -531,7 +541,7 @@ static bool mc_ytphy_id_matches(const struct device *dev, uint32_t *val)
 		return false;
 	}
 
-	return *val == PHY_ID_YT8521 || *val == PHY_ID_YT8531;
+	return mc_ytphy_is_known_id(*val);
 }
 
 static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
@@ -547,7 +557,7 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 			continue;
 		}
 
-		if (val == PHY_ID_YT8521 || val == PHY_ID_YT8531) {
+		if (mc_ytphy_is_known_id(val)) {
 			found = true;
 			break;
 		}
