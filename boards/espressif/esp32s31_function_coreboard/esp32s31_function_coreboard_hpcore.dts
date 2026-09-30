@@ -80,3 +80,7 @@ zephyr_udc0: &usb_otg {
 &wifi {
 	status = "okay";
 };
+
+&esp32_bt_hci {
+	status = "okay";
+};

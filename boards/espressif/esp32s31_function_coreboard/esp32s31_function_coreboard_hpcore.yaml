@@ -7,6 +7,7 @@ toolchain:
   - zephyr
 supported:
   - adc
+  - ble
   - can
   - counter
   - crypto
