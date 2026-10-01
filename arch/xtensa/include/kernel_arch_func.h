@@ -257,6 +257,34 @@ static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
 	flush_end = ROUND_DOWN(flush_end, XCHAL_DCACHE_LINESIZE);
 	__asm__ volatile("wsr %0, " ZSR_FLUSH_STR :: "r"(flush_end));
 }
+#elif defined(CONFIG_SMP)
+/* 3d local: SMP without KERNEL_COHERENCE (ESP32-S3: one cache shared by both
+ * cores, so no flush or invalidate is needed) still has to finish with the
+ * outgoing thread's stack before z_get_next_switch_handle() publishes its
+ * switch handle. Otherwise another CPU can resume the thread while this CPU
+ * is still in the interrupt epilogue, reading the interrupted SP out of the
+ * thread's stack and spilling its register windows there -- the thread then
+ * runs on two CPUs at once, the epilogue loads garbage, and the CPU ends in
+ * a double exception (Jenni, ESP32-S3 SMP with Wi-Fi, 2026-10-01). Spill the
+ * windows here, under the scheduler lock, as the coherence variant above
+ * does, and let the epilogue skip its own spill (xtensa_asm2.inc.S).
+ */
+static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
+					     void *old_switch_handle,
+					     struct k_thread *new_thread)
+{
+	ARG_UNUSED(old_thread);
+	ARG_UNUSED(new_thread);
+
+	if (old_switch_handle != NULL) {
+		int32_t a0save;
+
+		__asm__ volatile("mov %0, a0;"
+				 "call0 xtensa_spill_reg_windows;"
+				 "mov a0, %0"
+				 : "=r"(a0save));
+	}
+}
 #endif
 
 static inline bool arch_is_in_isr(void)

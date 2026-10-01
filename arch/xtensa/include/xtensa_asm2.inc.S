@@ -587,7 +587,7 @@ _do_call_\@:
 	 */
 	beq a6, a1, _restore_\@
 
-#if !defined(CONFIG_KERNEL_COHERENCE)
+#if !defined(CONFIG_KERNEL_COHERENCE) && !defined(CONFIG_SMP)
 	l32i a1, a1, 0
 	l32i a0, a1, ___xtensa_irq_bsa_t_a0_OFFSET
 	addi a1, a1, ___xtensa_irq_bsa_t_SIZEOF
