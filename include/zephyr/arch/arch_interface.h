@@ -1182,7 +1182,7 @@ size_t arch_user_string_nlen(const char *s, size_t maxsize, int *err);
  *                          yet).
  * @param new_thread The new thread to be invalidated before it runs locally.
  */
-#ifndef CONFIG_KERNEL_COHERENCE
+#if !defined(CONFIG_KERNEL_COHERENCE) && !(defined(CONFIG_XTENSA) && defined(CONFIG_SMP))
 static inline void arch_cohere_stacks(struct k_thread *old_thread,
 				      void *old_switch_handle,
 				      struct k_thread *new_thread)
