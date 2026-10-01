@@ -13,6 +13,7 @@
 
 #include <xtensa_exc.h>
 #include <xtensa_internal.h>
+#include <xtensa_asm2_context.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL);
@@ -89,6 +90,25 @@ char *xtensa_exccause(unsigned int cause_code)
 
 void xtensa_fatal_error(unsigned int reason, const struct arch_esf *esf)
 {
+#if defined(CONFIG_SMP)
+	/* 3d DIAG (bench only, do not keep): one synchronous line before
+	 * anything else, so the console has the first fault even when the
+	 * rest of the fatal path wedges.
+	 */
+	if (esf != NULL) {
+		const _xtensa_irq_bsa_t *bsa = (void *)*(int **)esf;
+		const char *name = k_thread_name_get(_current);
+
+		printk("\n!!FATAL cpu%u reason %u thread '%s' pc 0x%08x cause %u vaddr 0x%08x"
+		       " ps 0x%08x a0 0x%08x nested %u\n",
+		       (unsigned int)arch_curr_cpu()->id, reason, name != NULL ? name : "?",
+		       bsa->pc, bsa->exccause, bsa->excvaddr, bsa->ps, bsa->a0,
+		       arch_curr_cpu()->nested);
+	} else {
+		printk("\n!!FATAL cpu%u reason %u (no esf)\n",
+		       (unsigned int)arch_curr_cpu()->id, reason);
+	}
+#endif
 #ifdef CONFIG_EXCEPTION_DEBUG
 	if (esf != NULL) {
 		/* Don't want to get elbowed by xtensa_switch
