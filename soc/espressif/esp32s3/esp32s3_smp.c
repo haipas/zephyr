@@ -119,10 +119,14 @@ static void release_appcpu(void *entry_point)
 	esp_rom_ets_set_appcpu_boot_addr((void *)entry_point);
 }
 
+/* 3d local diagnostic: scheduling IPIs taken per core, read over JTAG. */
+volatile DRAM_ATTR uint32_t esp32s3_ipi_count[2];
+
 static void IRAM_ATTR crosscore_isr(void *arg)
 {
 	ARG_UNUSED(arg);
 
+	esp32s3_ipi_count[esp_core_id()]++;
 	if (esp_core_id() == 0) {
 		WRITE_PERI_REG(SYSTEM_CPU_INTR_FROM_CPU_0_REG, 0);
 	} else {

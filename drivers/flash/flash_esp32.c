@@ -367,8 +367,30 @@ static bool flash_esp32_is_aligned(off_t address, void *buffer, size_t length)
 }
 #endif
 
+/* 3d local diagnostic: a flash operation turns the cache -- and with it every
+ * PSRAM access -- off while it runs, reads included, so the calling thread's
+ * stack has to be internal RAM. Name the thread before it crashes on it.
+ */
+static inline void flash_esp32_check_stack(const char *op)
+{
+#if defined(CONFIG_ESP_SPIRAM) && defined(CONFIG_XTENSA) && !defined(CONFIG_MCUBOOT)
+	uintptr_t sp;
+
+	__asm__ volatile("mov %0, a1" : "=r"(sp));
+	if (sp >= 0x3C000000UL && sp < 0x3E000000UL) {
+		const char *name = k_thread_name_get(k_current_get());
+
+		printk("flash %s from a PSRAM stack: thread '%s' sp=0x%08lx\n", op,
+		       name != NULL ? name : "?", (unsigned long)sp);
+	}
+#else
+	ARG_UNUSED(op);
+#endif
+}
+
 static int flash_esp32_read(const struct device *dev, off_t address, void *buffer, size_t length)
 {
+	flash_esp32_check_stack("read");
 	int ret = 0;
 
 	if (length == 0U) {
@@ -441,6 +463,7 @@ static int flash_esp32_write(const struct device *dev, off_t address, const void
 {
 	int ret = 0;
 
+	flash_esp32_check_stack("write");
 #ifdef CONFIG_MCUBOOT
 	if (!flash_esp32_is_aligned(address, (void *)buffer, length)) {
 		LOG_ERR("Unaligned flash write is not supported");
@@ -486,6 +509,7 @@ static int flash_esp32_erase(const struct device *dev, off_t start, size_t len)
 {
 	int ret = 0;
 
+	flash_esp32_check_stack("erase");
 #ifdef CONFIG_MCUBOOT
 	ret = esp_rom_flash_erase_range(start, len);
 #else
