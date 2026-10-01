@@ -53,8 +53,15 @@ static ALWAYS_INLINE void IRAM_ATTR stall_trigger_set(int other, bool assert_lin
 	}
 }
 
-/* The parked core keeps its IRAM lines open so the radio handlers keep running. */
-#if defined(CONFIG_XTENSA)
+/* 3d local: the parked core does NOT open its interrupt level. Opening it let
+ * the CCOMPARE tick run on the parked core while the other core had the cache
+ * off; sys_clock_announce() then ran expired k_timer callbacks, which live in
+ * flash, and the core died on an instruction fetch (EXCCAUSE 0x14) without
+ * ever leaving the stall ("esp_mp: cpu N did not leave the stall", Jenni
+ * 2026-10-01). Keeping the level is what a single-core build does around a
+ * flash operation anyway (irq_lock), so the radio already lives with it.
+ */
+#if defined(CONFIG_XTENSA) && defined(CONFIG_SOC_ESP32_MP_STALL_OPEN_IRQ)
 static ALWAYS_INLINE uint32_t IRAM_ATTR stall_irq_open(void)
 {
 	uint32_t ps;
