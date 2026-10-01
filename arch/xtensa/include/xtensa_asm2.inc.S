@@ -377,6 +377,21 @@ _xstack_call0_\@:
 	callx4 a7		/* call handler */
 	mov a2, a6		/* copy return value */
 
+#ifndef CONFIG_USERSPACE
+	/* 3d local: mask before the RETW. Back in the caller, A1 is the
+	 * interrupted SP until "mov a1, a3" -- one BSA above the context
+	 * this interrupt saved. Any interrupt that the handler's PS still
+	 * admits there (a higher level, or any level if the handler left
+	 * INTLEVEL at 0) saves its own BSA exactly on top of ours; its
+	 * restore then resumes this instruction sequence with our handle
+	 * in A3, and the outer exit restores the overwritten BSA again and
+	 * again: a self-referencing context, nested count running down
+	 * forever, the core never acks a stall (Jenni, ESP32-S3 SMP,
+	 * 2026-10-01). The userspace path below already masks here.
+	 */
+	rsil a3, XCHAL_NUM_INTLEVELS
+#endif
+
 #ifdef CONFIG_USERSPACE
 	rsil a6, XCHAL_NUM_INTLEVELS
 
