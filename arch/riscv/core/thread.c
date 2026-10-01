@@ -79,6 +79,18 @@ void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack,
 #if defined(CONFIG_FPU_SHARING)
 	/* thread birth happens through the exception return path */
 	thread->arch.exception_depth = 1;
+
+	/*
+	 * k_thread_create() takes an uninitialized struct k_thread (it may come
+	 * from k_malloc(), as the esp32 Wi-Fi adapter's task objects do). The
+	 * lazy FPU path loads saved_fp_context on the thread's first FP
+	 * instruction, so start from a clean FPU state instead of whatever the
+	 * memory held: a garbage fcsr.frm of 5..7 turns every dynamic-rounding
+	 * FP instruction (fcvt, fadd, ...) into an illegal instruction.
+	 */
+	(void)memset(&thread->arch.saved_fp_context, 0,
+		     sizeof(thread->arch.saved_fp_context));
+	thread->arch.fpu_recently_used = false;
 #elif defined(CONFIG_FPU)
 	/* Unshared FP mode: enable FPU of each thread. */
 	stack_init->mstatus |= MSTATUS_FS_INIT;
