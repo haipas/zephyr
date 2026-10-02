@@ -16,6 +16,9 @@
 #include <zephyr/logging/log.h>
 
 #include <soc.h>
+#if defined(CONFIG_SOC_SERIES_ESP32P4)
+#include <esp_clk_tree.h>
+#endif
 
 LOG_MODULE_REGISTER(can_esp32_twai, CONFIG_CAN_LOG_LEVEL);
 
@@ -150,8 +153,38 @@ static int can_esp32_twai_get_core_clock(const struct device *dev, uint32_t *rat
 {
 	ARG_UNUSED(dev);
 
+#if defined(CONFIG_SOC_SERIES_ESP32P4)
+	/*
+	 * The ESP32-P4 TWAI controllers are not clocked from the APB clock: the only
+	 * TWAI clock source on this SoC is the 40 MHz XTAL (SOC_TWAI_CLKS in
+	 * soc/clk_tree_defs.h, TWAI_CLK_SRC_DEFAULT == SOC_MOD_CLK_XTAL), and
+	 * soc.h's APB_CLK_FREQ (90 MHz) is unrelated to it. Using APB_CLK_FREQ / 2
+	 * (45 MHz) here made the requested bit rate run at 20/45 = 0.444x: 1 Mbit/s
+	 * became 444 kbit/s and the controller never received a frame on a real
+	 * 1 Mbit/s bus (error_passive, REC stuck at 128, rx_frames 0).
+	 *
+	 * Ask the clock tree for the frequency of the default TWAI source instead
+	 * (same query the TWAI-FD driver uses); like on the other SoCs the SJA1000
+	 * core runs at half of it, i.e. 20 MHz on the P4. Bench-verified on a
+	 * Waveshare ESP32-P4 module by JTAG: BTR0=0x00/BTR1=0x3E (20 tq @ 20 MHz,
+	 * 1 Mbit/s) receives; the old BTR0=0x02/BTR1=0x39 (Zephyr-computed against
+	 * 45 MHz) does not.
+	 */
+	uint32_t source_hz = 0;
+	int err;
+
+	err = esp_clk_tree_src_get_freq_hz(TWAI_CLK_SRC_DEFAULT,
+					   ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &source_hz);
+	if (err != 0 || source_hz == 0) {
+		LOG_ERR("failed to query TWAI clock frequency (err %d)", err);
+		return err != 0 ? -EIO : -EINVAL;
+	}
+
+	*rate = source_hz / 2;
+#else
 	/* The internal clock operates at half of the oscillator frequency */
 	*rate = APB_CLK_FREQ / 2;
+#endif
 
 	return 0;
 }
