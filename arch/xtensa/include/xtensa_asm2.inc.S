@@ -602,6 +602,22 @@ _do_call_\@:
 	 */
 	beq a6, a1, _restore_\@
 
+#if defined(CONFIG_SMP) && defined(CONFIG_SOC_SERIES_ESP32S3)
+	/* 3d DIAG (bench only, do not keep): switching threads, so every
+	 * frame but this one must have been spilled -- WINDOWSTART must be
+	 * exactly 1 << WINDOWBASE. Anything else hands live frames of the
+	 * outgoing thread to the incoming one.
+	 */
+	rsr a2, WINDOWSTART
+	rsr a3, WINDOWBASE
+	movi a0, 1
+	ssl a3
+	sll a0, a0
+	beq a0, a2, _ws_ok_\@
+	j xt_ws_capture
+_ws_ok_\@:
+#endif
+
 #if !defined(CONFIG_KERNEL_COHERENCE) && !defined(CONFIG_SMP)
 	l32i a1, a1, 0
 	l32i a0, a1, ___xtensa_irq_bsa_t_a0_OFFSET

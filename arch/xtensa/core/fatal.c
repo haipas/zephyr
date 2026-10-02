@@ -4,6 +4,7 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/init.h>
 #include <zephyr/arch/cpu.h>
 #include <inttypes.h>
 #include <xtensa/config/specreg.h>
@@ -14,6 +15,7 @@
 #include <xtensa_exc.h>
 #include <xtensa_internal.h>
 #include <xtensa_asm2_context.h>
+#include <esp_rom_sys.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(os, CONFIG_KERNEL_LOG_LEVEL);
@@ -95,17 +97,36 @@ void xtensa_fatal_error(unsigned int reason, const struct arch_esf *esf)
 	 * anything else, so the console has the first fault even when the
 	 * rest of the fatal path wedges.
 	 */
+	{
+		extern uint32_t xt_fatal_rec[16];
+		const char *n = k_thread_name_get(_current);
+
+		xt_fatal_rec[1] = reason;
+		xt_fatal_rec[2] = arch_curr_cpu()->id;
+		xt_fatal_rec[3] = (uint32_t)_current;
+		xt_fatal_rec[4] = (uint32_t)_current->stack_info.start;
+		xt_fatal_rec[5] = (uint32_t)_current->stack_info.size;
+		xt_fatal_rec[6] = esf != NULL ? (uint32_t)*(int **)esf : 0U;
+		xt_fatal_rec[7] = esf != NULL ? ((const _xtensa_irq_bsa_t *)*(int **)esf)->pc : 0U;
+		for (int i = 0; i < 32; i++) {
+			((char *)&xt_fatal_rec[8])[i] = (n != NULL && i < 31) ? n[i] : 0;
+			if (n != NULL && n[i] == 0) {
+				n = NULL;
+			}
+		}
+		xt_fatal_rec[0] = 0x46544c31U;
+	}
 	if (esf != NULL) {
 		const _xtensa_irq_bsa_t *bsa = (void *)*(int **)esf;
 		const char *name = k_thread_name_get(_current);
 
-		printk("\n!!FATAL cpu%u reason %u thread '%s' pc 0x%08x cause %u vaddr 0x%08x"
+		esp_rom_printf("\n!!FATAL cpu%u reason %u thread '%s' pc 0x%08x cause %u vaddr 0x%08x"
 		       " ps 0x%08x a0 0x%08x nested %u\n",
 		       (unsigned int)arch_curr_cpu()->id, reason, name != NULL ? name : "?",
 		       bsa->pc, bsa->exccause, bsa->excvaddr, bsa->ps, bsa->a0,
 		       arch_curr_cpu()->nested);
 	} else {
-		printk("\n!!FATAL cpu%u reason %u (no esf)\n",
+		esp_rom_printf("\n!!FATAL cpu%u reason %u (no esf)\n",
 		       (unsigned int)arch_curr_cpu()->id, reason);
 	}
 #endif
@@ -183,3 +204,54 @@ static void z_vrfy_xtensa_user_fault(unsigned int reason)
 #include <zephyr/syscalls/xtensa_user_fault_mrsh.c>
 
 #endif /* CONFIG_USERSPACE */
+
+#if defined(CONFIG_SMP) && defined(CONFIG_SOC_SERIES_ESP32S3)
+/* 3d DIAG (bench only, do not keep): print the double exception record
+ * xt_dblexc_capture (xtensa_asm2_util.S) left in RTC memory before the
+ * watchdog reset; repeated every minute so the console capture catches it.
+ */
+__attribute__((section(".rtc_noinit"))) uint32_t xt_dblexc_rec[32];
+/* 3d DIAG: window-state record of xt_ws_capture, read over JTAG. */
+__attribute__((section(".rtc_noinit"))) uint32_t xt_ws_rec[32];
+/* 3d DIAG: last fatal error (thread name, stack bounds), printed at boot. */
+__attribute__((section(".rtc_noinit"))) uint32_t xt_fatal_rec[16];
+
+static void xt_dblexc_print(void)
+{
+	if (xt_fatal_rec[0] == 0x46544c31U) {
+		esp_rom_printf("\n!!LASTFATAL reason %u cpu %u thread %p '%s' stack 0x%08x+%u sp 0x%08x"
+			       " pc 0x%08x\n",
+			       xt_fatal_rec[1], xt_fatal_rec[2], (void *)xt_fatal_rec[3],
+			       (const char *)&xt_fatal_rec[8], xt_fatal_rec[4], xt_fatal_rec[5],
+			       xt_fatal_rec[6], xt_fatal_rec[7]);
+	}
+	for (int c = 0; c < 2; c++) {
+		const uint32_t *r = &xt_dblexc_rec[c * 16];
+
+		if (r[0] != 0x44424c31U) {
+			continue;
+		}
+		printk("!!DBLEXC slot%d depc 0x%08x cause %u vaddr 0x%08x epc1 0x%08x ps 0x%08x"
+		       " prid 0x%08x a0 0x%08x a1 0x%08x excsave1 0x%08x wb %u ws 0x%08x"
+		       " cc 0x%08x hits %u\n",
+		       c, r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11],
+		       r[12], r[13]);
+	}
+}
+
+static void xt_dblexc_timer_fn(struct k_timer *t)
+{
+	ARG_UNUSED(t);
+	xt_dblexc_print();
+}
+
+static K_TIMER_DEFINE(xt_dblexc_timer, xt_dblexc_timer_fn, NULL);
+
+static int xt_dblexc_report(void)
+{
+	xt_dblexc_print();
+	k_timer_start(&xt_dblexc_timer, K_SECONDS(30), K_SECONDS(60));
+	return 0;
+}
+SYS_INIT(xt_dblexc_report, APPLICATION, 99);
+#endif

@@ -632,6 +632,12 @@ _TripleFault:
 	movi a2, SYS_exit
 	simcall
 #endif
+#if defined(CONFIG_SMP) && defined(CONFIG_SOC_SERIES_ESP32S3)
+	/* 3d DIAG (bench only, do not keep): record the double exception in
+	 * RTC memory before spinning; the vector slot is too small for it.
+	 */
+	j	xt_dblexc_capture
+#endif
 1:
 	j	1b
 
@@ -656,4 +662,98 @@ _handle_tlb_miss_dblexc:
 #endif
 .popsection
 
+#endif
+
+#if defined(CONFIG_SMP) && defined(CONFIG_SOC_SERIES_ESP32S3)
+/* 3d DIAG (bench only, do not keep): per-core double exception record in
+ * RTC slow memory (survives the TG0 watchdog reset that ends the spin).
+ * Layout per core (64 bytes, core 1 at +64): magic 'DBL1', DEPC, EXCCAUSE,
+ * EXCVADDR, EPC1, PS, PRID, a0, a1, EXCSAVE1, WINDOWBASE, WINDOWSTART,
+ * CCOUNT, hit count.
+ */
+.section .iram1.xt_dblexc, "ax"
+.literal_position
+.literal .Lxt_dblexc_rec, xt_dblexc_rec
+.literal .Lxt_dblexc_magic, 0x44424c31
+.align 4
+.global xt_dblexc_capture
+xt_dblexc_capture:
+	l32r	a2, .Lxt_dblexc_rec
+	rsr.prid a3
+	extui	a3, a3, 13, 1
+	slli	a3, a3, 6
+	add	a2, a2, a3
+	l32r	a3, .Lxt_dblexc_magic
+	s32i	a3, a2, 0
+	rsr.depc a3
+	s32i	a3, a2, 4
+	rsr.exccause a3
+	s32i	a3, a2, 8
+	rsr.excvaddr a3
+	s32i	a3, a2, 12
+	rsr.epc1 a3
+	s32i	a3, a2, 16
+	rsr.ps	a3
+	s32i	a3, a2, 20
+	rsr.prid a3
+	s32i	a3, a2, 24
+	s32i	a0, a2, 28
+	s32i	a1, a2, 32
+	rsr.excsave1 a3
+	s32i	a3, a2, 36
+	rsr.windowbase a3
+	s32i	a3, a2, 40
+	rsr.windowstart a3
+	s32i	a3, a2, 44
+	rsr.ccount a3
+	s32i	a3, a2, 48
+	l32i	a3, a2, 52
+	addi	a3, a3, 1
+	s32i	a3, a2, 52
+2:
+	j	2b
+
+/* 3d DIAG (bench only, do not keep): reached from the EXCINT epilogue when a
+ * thread switch finds frames other than the current one still live. Enter
+ * with a2 = WINDOWSTART, a3 = WINDOWBASE, a1 = outgoing handle, a6 = incoming
+ * handle. Only a0/a2/a3 are touched before WINDOWSTART/WINDOWBASE are stored
+ * (any other register could overflow a live frame and change the evidence).
+ * Layout per core (64 bytes): magic 'WSB1', WS | WB << 16, PS, EPC1,
+ * EXCCAUSE, a1, a6, _current, CCOUNT, PRID, hits.
+ */
+.literal .Lxt_ws_rec, xt_ws_rec
+.literal .Lxt_ws_magic, 0x57534231
+.align 4
+.global xt_ws_capture
+xt_ws_capture:
+	slli	a3, a3, 16
+	or	a2, a2, a3
+	l32r	a0, .Lxt_ws_rec
+	rsr.prid a3
+	extui	a3, a3, 13, 1
+	slli	a3, a3, 6
+	add	a0, a0, a3
+	s32i	a2, a0, 4
+	l32r	a3, .Lxt_ws_magic
+	s32i	a3, a0, 0
+	rsr.ps	a3
+	s32i	a3, a0, 8
+	rsr.epc1 a3
+	s32i	a3, a0, 12
+	rsr.exccause a3
+	s32i	a3, a0, 16
+	s32i	a1, a0, 20
+	s32i	a6, a0, 24
+	rsr.misc1 a3
+	l32i	a3, a3, ___cpu_t_current_OFFSET
+	s32i	a3, a0, 28
+	rsr.ccount a3
+	s32i	a3, a0, 32
+	rsr.prid a3
+	s32i	a3, a0, 36
+	l32i	a3, a0, 40
+	addi	a3, a3, 1
+	s32i	a3, a0, 40
+3:
+	j	3b
 #endif
