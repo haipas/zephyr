@@ -16,6 +16,10 @@
 #include <hal/cpu_utility_ll.h>
 #include <soc/system_reg.h>
 #include <soc/soc.h>
+#include <soc/lp_system_reg.h>
+#include <soc/hp_system_reg.h>
+#include <soc/hp_sys_clkrst_reg.h>
+#include <soc/pmu_reg.h>
 
 #include "cache.h"
 #include <esp32p4/rom/cache.h>
@@ -34,6 +38,14 @@
 			ESP_INT_FLAGS_CHECK(DT_IRQ_BY_IDX(DT_NODELABEL(node), 0, flags)) |         \
 			ESP_INTR_FLAG_IRAM,                                                        \
 		handler, NULL, NULL)
+
+/* 3d local: CPU1 stores this marker in esp_appcpu_entry() once it runs our
+ * code, so CPU0 can tell a core that never left the ROM from a slow one.
+ */
+#define APPCPU_ALIVE_MAGIC      0x865A11FEU
+#define APPCPU_ALIVE_TIMEOUT_US 100000U
+
+volatile DRAM_ATTR uint32_t esp_appcpu_alive;
 
 /* CPU1 entry point jumped to by the ROM. Sets up the per-core CSRs and
  * continues into the generic RISC-V __initialize.
@@ -66,6 +78,11 @@ void IRAM_ATTR __attribute__((naked, noreturn)) esp_appcpu_entry(void)
 		"la gp, __global_pointer$\n"
 		".option pop\n"
 #endif
+
+		/* 3d local: tell CPU0 that this core runs our code. */
+		"la t0, esp_appcpu_alive\n"
+		"li t1, " STRINGIFY(APPCPU_ALIVE_MAGIC) "\n"
+		"sw t1, 0(t0)\n"
 
 		"j __initialize\n"
 #ifdef CONFIG_FPU
@@ -241,8 +258,33 @@ void soc_per_core_init_hook(void)
 }
 
 #ifdef CONFIG_SMP
+/* 3d local: CPU1 was released before z_cstart() and has had the whole of
+ * PRE_KERNEL_1 to reach esp_appcpu_entry(). If it never did, end in a fatal
+ * error now instead of in the endless handshake of arch_cpu_start(): no
+ * watchdog is armed this early, so a silent spin is a dark board.
+ */
+static void appcpu_wait_alive(void)
+{
+	for (uint32_t waited_us = 0U; esp_appcpu_alive != APPCPU_ALIVE_MAGIC; waited_us += 10U) {
+		if (waited_us >= APPCPU_ALIVE_TIMEOUT_US) {
+			esp_rom_printf("esp32p4 smp: cpu1 did not start: boot_addr=%08x "
+				       "corestalled=%08x soc_clk_ctrl0=%08x hp_rst_en0=%08x "
+				       "pmu_sw_stall=%08x\n",
+				       REG_READ(LP_SYSTEM_REG_BOOT_ADDR_HP_CORE1_REG),
+				       REG_READ(HP_SYSTEM_CPU_CORESTALLED_ST_REG),
+				       REG_READ(HP_SYS_CLKRST_SOC_CLK_CTRL0_REG),
+				       REG_READ(HP_SYS_CLKRST_HP_RST_EN0_REG),
+				       REG_READ(PMU_CPU_SW_STALL_REG));
+			printk("esp32p4 smp: cpu1 did not start\n");
+			k_panic();
+		}
+		esp_rom_delay_us(10);
+	}
+}
+
 int arch_smp_init(void)
 {
+	appcpu_wait_alive();
 	register_ipi();
 	return 0;
 }
