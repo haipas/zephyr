@@ -24,6 +24,7 @@
 #include <zephyr/sys/speculation.h>
 #include <zephyr/internal/syscall_handler.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/barrier.h>
 #include <zephyr/fs/fs.h>
 
 K_MEM_SLAB_DEFINE_TYPE(file_desc_slab, struct fs_file_t, ZVFS_OPEN_SIZE);
@@ -244,13 +245,30 @@ void *zvfs_get_fd_obj_and_vtable(int fd, const struct fd_op_vtable **vtable, str
 	}
 
 	entry = &fdtable[fd];
+
+	/* 3d local: obj before vtable, ordered against zvfs_finalize_typed_fd()
+	 * (vtable, barrier, obj). The refcount is raised at reserve time, before
+	 * either is written, so on SMP a poller holding a just-reused descriptor
+	 * could read the new obj with a still-NULL vtable and call through NULL
+	 * (Jenni 2026-10-02: socket service thread, zvfs_poll_internal ->
+	 * zvfs_fdtable_call_ioctl, LoadProhibited at 0xc). A half-published entry
+	 * (vtable still or already NULL) is reported as a bad descriptor instead;
+	 * obj may legitimately be NULL (stdin/stdout/stderr).
+	 */
+	void *obj = entry->obj;
+
+	barrier_dmem_fence_full();
 	*vtable = entry->vtable;
+	if (*vtable == NULL) {
+		errno = EBADF;
+		return NULL;
+	}
 
 	if (lock != NULL) {
 		*lock = &entry->lock;
 	}
 
-	return entry->obj;
+	return obj;
 }
 
 int zvfs_reserve_fd(void)
@@ -288,9 +306,11 @@ void zvfs_finalize_typed_fd(int fd, void *obj, const struct fd_op_vtable *vtable
 	 */
 	k_object_recycle(obj);
 #endif
-	fdtable[fd].obj = obj;
+	/* 3d local: publish vtable before obj (see zvfs_get_fd_obj_and_vtable()). */
 	fdtable[fd].vtable = vtable;
 	fdtable[fd].mode = mode;
+	barrier_dmem_fence_full();
+	fdtable[fd].obj = obj;
 
 	/* Let the object know about the lock just in case it needs it
 	 * for something. For BSD sockets, the lock is used with condition

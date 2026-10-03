@@ -16,6 +16,8 @@
 #include <psram.h>
 #include <zephyr/drivers/interrupt_controller/intc_esp32.h>
 #include <zephyr/sys/printk.h>
+#include <soc/interrupts.h>
+#include <rom/ets_sys.h>
 
 extern FUNC_NORETURN void z_prep_c(void);
 extern void esp_reset_reason_init(void);
@@ -37,6 +39,23 @@ static void IRAM_ATTR esp_errata(void)
 #endif
 }
 
+/* 3d local: start from an empty interrupt matrix on both cores, as the IDF
+ * startup does (core_intr_matrix_clear()). A software reset keeps the
+ * routing of the image that ran before, and a stale source routed to a CPU
+ * interrupt this image uses for something else fires the wrong handler and
+ * is never acknowledged: after an OTA from a single-core image, SPI3 still
+ * sat on CPU0 interrupt 17 -- the SMP stall line here -- and stormed the
+ * stall ISR before the SPI driver could re-route it (Jenni, 2026-10-01).
+ */
+static void IRAM_ATTR esp_intr_matrix_clear_all(void)
+{
+	for (int core = 0; core < SOC_CPU_CORES_NUM; core++) {
+		for (int src = 0; src < ETS_MAX_INTR_SOURCE; src++) {
+			intr_matrix_set(core, src, ETS_INVALID_INUM);
+		}
+	}
+}
+
 void IRAM_ATTR __esp_platform_app_start(void)
 {
 	/* Configure the mode of instruction cache : cache size, cache line size. */
@@ -49,6 +68,8 @@ void IRAM_ATTR __esp_platform_app_start(void)
 
 	/* Apply SoC patches */
 	esp_errata();
+
+	esp_intr_matrix_clear_all();
 
 	esp_reset_reason_init();
 
