@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <string.h>
 #include <hw_init.h>
 #include <stdint.h>
 #include <esp_cpu.h>
@@ -86,6 +87,23 @@ int hardware_init(void)
 		.l2_cache_line_size = CONFIG_ESP32_CACHE_L2_LINE_SIZE,
 	};
 	cache_hal_init(&cache_config);
+
+	/* 3d local: the ROM boots with a larger L2 cache that occupies the top of
+	 * HP L2MEM (from 0x4FF80000 with 256 KB). start_riscv() zeroed .bss while
+	 * that range was still cache, so the part of .bss above the ROM's L2
+	 * boundary holds stale cache data until it is zeroed again here, now that
+	 * cache_hal_init() has shrunk L2 to CONFIG_ESP32_CACHE_L2_SIZE.
+	 */
+	{
+		extern char __bss_start[];
+		extern char __bss_end[];
+		char *rom_l2_start = (char *)0x4FF80000;
+		char *from = __bss_start > rom_l2_start ? __bss_start : rom_l2_start;
+
+		if (from < __bss_end) {
+			memset(from, 0, (size_t)(__bss_end - from));
+		}
+	}
 
 	mmu_hal_config_t mmu_config = {
 		.core_nums = 1,
