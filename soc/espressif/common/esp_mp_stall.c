@@ -33,6 +33,36 @@ static DRAM_ATTR atomic_t s_pause_owner = ATOMIC_INIT(-1);
 static volatile DRAM_ATTR uint32_t s_pause_nest;
 static volatile DRAM_ATTR unsigned int s_pause_irq_key[CONFIG_MP_MAX_NUM_CPUS];
 
+/* 3d local (haipas/3d-fw#989): once set, every other core is held by the
+ * hardware run-stall (esp_cpu_stall(), the RTC_CNTL SW_STALL bits) instead of
+ * the cooperative IPI park, and pause/resume become no-ops. Set only on the
+ * way into a fatal error: a stall request that was never acked, or a
+ * requester that cannot be parked itself (exception, ISR or interrupts already
+ * masked) finding the pause owned by a core that waits for that very ack. Both
+ * used to end with both cores spinning on each other forever -- with the task
+ * watchdog a SoC-fallback reset without a coredump. ESP-IDF's panic handler
+ * stalls the other core the same way (panic_handler.c, esp_cpu_stall()). The
+ * app core start clears the stall again (esp_cpu_unstall(1)).
+ */
+static volatile DRAM_ATTR bool s_hw_stalled;
+
+/* How long a requester that cannot be parked waits for a foreign pause owner
+ * before it stops cooperating; far above any flash operation. */
+#define PAUSE_UNPARKABLE_SPIN_MAX 20000000U
+
+static void IRAM_ATTR hw_stall_others(void)
+{
+	int me = esp_cpu_get_core_id();
+
+	for (int cpu = 0; cpu < CONFIG_MP_MAX_NUM_CPUS; cpu++) {
+		if (cpu != me && s_cpu_up[cpu]) {
+			esp_cpu_stall(cpu);
+		}
+	}
+	s_hw_stalled = true;
+	barrier_dmem_fence_full();
+}
+
 static ALWAYS_INLINE void IRAM_ATTR stall_trigger_clear(int core_id)
 {
 	if (core_id == 0) {
@@ -121,7 +151,7 @@ static void IRAM_ATTR stall_other_cpu(void)
 	int other = (esp_cpu_get_core_id() == 0) ? 1 : 0;
 	uint32_t spins = 0;
 
-	if (!s_stall_enabled || !s_cpu_up[other]) {
+	if (!s_stall_enabled || !s_cpu_up[other] || s_hw_stalled) {
 		return;
 	}
 
@@ -136,6 +166,10 @@ static void IRAM_ATTR stall_other_cpu(void)
 		arch_spin_relax();
 		if (++spins > STALL_SPIN_MAX) {
 			esp_rom_printf("esp_mp: cpu %d did not ack the stall\n", other);
+			/* The fatal path writes the coredump to flash and pauses
+			 * again: hold the peer in hardware so nobody waits on it a
+			 * second time (3d-fw#989). */
+			hw_stall_others();
 			k_panic();
 		}
 	}
@@ -146,7 +180,7 @@ static void IRAM_ATTR release_other_cpu(void)
 	int other = (esp_cpu_get_core_id() == 0) ? 1 : 0;
 	uint32_t spins = 0;
 
-	if (!s_stall_enabled || !s_cpu_up[other]) {
+	if (!s_stall_enabled || !s_cpu_up[other] || s_hw_stalled) {
 		return;
 	}
 
@@ -169,8 +203,9 @@ void IRAM_ATTR soc_mp_pause_others(void)
 {
 	unsigned int key;
 	atomic_val_t me;
+	uint32_t unparkable_spins = 0;
 
-	if (!s_stall_enabled) {
+	if (!s_stall_enabled || s_hw_stalled) {
 		return;
 	}
 
@@ -194,6 +229,22 @@ void IRAM_ATTR soc_mp_pause_others(void)
 		arch_irq_unlock(key);
 		arch_nop();
 		key = arch_irq_lock();
+
+		/* 3d local (3d-fw#989): a requester in an exception or ISR, or one
+		 * called with interrupts already masked, cannot take the park
+		 * interrupt, so an owner waiting for its ack waits forever, and
+		 * so does this loop -- the fatal/coredump path meeting a flash
+		 * operation on the other core. Stop cooperating: hold the others
+		 * in hardware and carry on as the only running core.
+		 */
+		if ((k_is_in_isr() || !arch_irq_unlocked(key)) &&
+		    (++unparkable_spins > PAUSE_UNPARKABLE_SPIN_MAX)) {
+			esp_rom_printf("esp_mp: cpu %d cannot be parked, pause owner %d: hw stall\n",
+				       (int)me, (int)atomic_get(&s_pause_owner));
+			hw_stall_others();
+			arch_irq_unlock(key);
+			return;
+		}
 	}
 
 	s_pause_irq_key[me] = key;
@@ -206,7 +257,7 @@ void IRAM_ATTR soc_mp_resume_others(void)
 {
 	unsigned int key;
 
-	if (!s_stall_enabled) {
+	if (!s_stall_enabled || s_hw_stalled) {
 		return;
 	}
 
