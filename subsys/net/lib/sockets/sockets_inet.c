@@ -49,6 +49,33 @@ BUILD_ASSERT(sizeof(net_socklen_t) == sizeof(uint32_t),
 
 const struct socket_op_vtable sock_fd_op_vtable;
 
+#if CONFIG_NET_SOCKETS_DGRAM_RECV_Q_MAX > 0
+/* 3d local (haipas/3d-fw#996): a datagram socket nobody reads must not be
+ * able to hold every net RX buffer. Count the queue under the queue's own
+ * lock; the walk stops at the limit, so it stays short.
+ */
+static bool dgram_recv_q_full(struct net_context *ctx)
+{
+	k_spinlock_key_t key;
+	sys_sfnode_t *node;
+	int queued = 0;
+
+	if (net_context_get_type(ctx) != NET_SOCK_DGRAM) {
+		return false;
+	}
+
+	key = k_spin_lock(&ctx->recv_q._queue.lock);
+	SYS_SFLIST_FOR_EACH_NODE(&ctx->recv_q._queue.data_q, node) {
+		if (++queued >= CONFIG_NET_SOCKETS_DGRAM_RECV_Q_MAX) {
+			break;
+		}
+	}
+	k_spin_unlock(&ctx->recv_q._queue.lock, key);
+
+	return queued >= CONFIG_NET_SOCKETS_DGRAM_RECV_Q_MAX;
+}
+#endif
+
 static void zsock_received_cb(struct net_context *ctx,
 			      struct net_pkt *pkt,
 			      union net_ip_header *ip_hdr,
@@ -305,6 +332,21 @@ static void zsock_received_cb(struct net_context *ctx,
 	net_pkt_set_eof(pkt, false);
 
 	net_pkt_set_rx_stats_tick(pkt, k_cycle_get_32());
+
+#if CONFIG_NET_SOCKETS_DGRAM_RECV_Q_MAX > 0
+	if (dgram_recv_q_full(ctx)) {
+		static uint32_t dgram_drops;
+
+		/* Same as a full socket receive buffer: drop the new datagram. */
+		dgram_drops++;
+		if ((dgram_drops == 1U) || ((dgram_drops % 100U) == 0U)) {
+			NET_WARN("ctx %p: datagram queue full (%d), dropped %u so far",
+				 ctx, CONFIG_NET_SOCKETS_DGRAM_RECV_Q_MAX, dgram_drops);
+		}
+		net_pkt_unref(pkt);
+		goto unlock;
+	}
+#endif
 
 	k_fifo_put(&ctx->recv_q, pkt);
 
