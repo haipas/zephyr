@@ -197,6 +197,7 @@ static void socket_service_thread(void *p1, void *p2, void *p3)
 
 	int ret, i, fd, count = 0;
 	zvfs_eventfd_t value;
+	unsigned int poll_failures = 0U;
 
 	STRUCT_SECTION_COUNT(net_socket_service_desc, &ret);
 	if (ret == 0) {
@@ -267,14 +268,30 @@ restart:
 	while (true) {
 		ret = zsock_poll(ctx.events, count + 1, -1);
 		if (ret < 0) {
+			/* 3d local: never leave the loop. This thread is the only
+			 * reader of every service socket (DNS dispatcher, DHCPv4
+			 * server, ...). Once it returned, nothing drained those
+			 * sockets any more, and a UDP socket that is not read keeps
+			 * every packet it gets: on Jenni (3d-fw#996) the DHCPv4
+			 * server socket ended up holding all net RX buffers, after
+			 * which the whole device was off the network until a reset.
+			 * Back off and rebuild the poll set instead.
+			 */
 			ret = -errno;
-			NET_ERR("poll failed (%d)", ret);
-			goto out;
+			poll_failures++;
+			if ((poll_failures == 1U) || ((poll_failures % 100U) == 0U)) {
+				NET_ERR("poll failed (%d), %u times, retrying", ret,
+					poll_failures);
+			}
+			k_msleep(10);
+			goto restart;
 		}
 
 		if (ret == 0) {
-			/* should not happen because timeout is -1 */
-			break;
+			/* should not happen because timeout is -1; 3d local: retry
+			 * rather than stop the service (see above).
+			 */
+			continue;
 		}
 
 		/* Process work here */
