@@ -8,6 +8,7 @@
 #define ZEPHYR_DRIVERS_SPI_ESP32_SPIM_H_
 
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/sys/util.h>
 #include <hal/spi_hal.h>
 #ifdef CONFIG_ESP32_SPI_TARGET
 #include <hal/spi_slave_hal.h>
@@ -83,6 +84,15 @@ struct spi_esp32_data {
 		size_t len;
 	} target_rx_seg[CONFIG_SPI_ESP32_TARGET_MAX_BUFS];
 	size_t target_rx_seg_cnt;
+#endif
+#if CONFIG_SPI_ESP32_DMA_BOUNCE_BYTES > 0
+	/* Static bounce buffers for transfers whose buffer the DMA cannot reach
+	 * (see Kconfig). Word aligned for the DMA descriptors; the receive
+	 * length is rounded up to whole words, so the receive buffer carries
+	 * the slack.
+	 */
+	uint8_t tx_bounce[CONFIG_SPI_ESP32_DMA_BOUNCE_BYTES] __aligned(4);
+	uint8_t rx_bounce[ROUND_UP(CONFIG_SPI_ESP32_DMA_BOUNCE_BYTES, 4)] __aligned(4);
 #endif
 	uint8_t dfs;
 	uint32_t clock_source_hz;
