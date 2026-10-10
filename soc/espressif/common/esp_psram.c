@@ -64,6 +64,65 @@ static void esp_psram_refresh_flash_timing(void)
 }
 #endif
 
+#if CONFIG_ESP_SPIRAM && defined(CONFIG_SOC_SERIES_ESP32P4)
+#include <hal/wdt_hal.h>
+#include <soc/rtc.h>
+#include <soc/reset_reasons.h>
+#include <esp_rom_sys.h>
+#include <esp_rom_serial_output.h>
+
+/* 3d local: the RTC watchdog guards the PSRAM bring-up (3d-fw#1066).
+ *
+ * A reset that cuts an earlier boot inside PSRAM init (seen with a JTAG
+ * system reset followed by a hart reset) can leave the PSRAM side in a state
+ * that neither a CPU reset nor a system reset clears: the next boot's first
+ * PSRAM register read (s_psram_common_transaction()) never completes, and no
+ * other watchdog is armed this early (config_wdt() has disabled the boot-time
+ * ones). Measured on the bench, an RTC watchdog reset (stage action
+ * RESET_RTC) brings such a board back. So the RTC watchdog runs from the
+ * first PSRAM transaction until the PSRAM is mapped, as the ESP-IDF
+ * bootloader's RTC watchdog covers this phase, and turns the hang into a
+ * reset that recovers. It is disarmed before the optional memory test and the
+ * .ext_ram.bss clear, whose duration scales with the PSRAM size.
+ *
+ * The same leftover state can also make the PSRAM answer garbage instead of
+ * nothing ("PSRAM chip is not connected"): init fails fast, and every CPU
+ * reset that follows meets the same state again. A failed init therefore
+ * waits for the armed RTC watchdog -- at most ESP32P4_PSRAM_INIT_TRIES times
+ * in a row, counted in RTC memory, so that an image with CONFIG_ESP_SPIRAM on
+ * a board without (working) PSRAM still boots on without it afterwards, as it
+ * did before this guard existed.
+ */
+#define ESP32P4_PSRAM_INIT_RWDT_MS 2000U
+#define ESP32P4_PSRAM_INIT_TRIES   3U
+#define ESP32P4_PSRAM_TRIES_MAGIC  0x50535257U /* "PSRW" */
+
+static uint32_t esp32p4_psram_tries_magic __attribute__((section(".rtc_noinit")));
+static uint32_t esp32p4_psram_tries __attribute__((section(".rtc_noinit")));
+
+static void esp32p4_psram_rwdt(bool arm)
+{
+	wdt_hal_context_t rwdt = RWDT_HAL_CONTEXT_DEFAULT();
+
+	if (arm) {
+		uint32_t ticks = (uint32_t)((uint64_t)ESP32P4_PSRAM_INIT_RWDT_MS *
+					    rtc_clk_slow_freq_get_hz() / 1000U);
+
+		wdt_hal_init(&rwdt, WDT_RWDT, 0, false);
+		wdt_hal_write_protect_disable(&rwdt);
+		wdt_hal_config_stage(&rwdt, WDT_STAGE0, ticks, WDT_STAGE_ACTION_RESET_RTC);
+		wdt_hal_enable(&rwdt);
+	} else {
+		wdt_hal_write_protect_disable(&rwdt);
+		wdt_hal_disable(&rwdt);
+	}
+	wdt_hal_write_protect_enable(&rwdt);
+}
+#define PSRAM_INIT_GUARD(arm) esp32p4_psram_rwdt(arm)
+#else
+#define PSRAM_INIT_GUARD(arm)
+#endif
+
 void esp_init_psram(void)
 {
 	intptr_t mapped_vaddr = 0;
@@ -78,6 +137,7 @@ void esp_init_psram(void)
 	 * the final MSPI settings. ESP32 cache has no per-address
 	 * invalidate primitive, so the invalidate step is skipped there.
 	 */
+	PSRAM_INIT_GUARD(true);
 	if (esp_psram_chip_init()) {
 		ets_printf("Failed to Initialize external RAM, aborting.\n");
 		return;
@@ -100,6 +160,7 @@ void esp_init_psram(void)
 		ets_printf("Failed to Initialize external RAM, aborting.\n");
 		return;
 	}
+	PSRAM_INIT_GUARD(false);
 
 	if (esp_psram_get_size() < CONFIG_ESP_SPIRAM_SIZE) {
 		ets_printf("External RAM size is less than configured.\n");
@@ -137,7 +198,32 @@ void esp_init_psram(void)
 #if CONFIG_ESP_SPIRAM && defined(CONFIG_SOC_SERIES_ESP32P4)
 static int esp32p4_psram_init(void)
 {
+	if (esp32p4_psram_tries_magic != ESP32P4_PSRAM_TRIES_MAGIC ||
+	    esp_rom_get_reset_reason(0) == RESET_REASON_CHIP_POWER_ON) {
+		esp32p4_psram_tries_magic = ESP32P4_PSRAM_TRIES_MAGIC;
+		esp32p4_psram_tries = 0U;
+	}
+
 	esp_init_psram();
+	if (!esp_psram_is_initialized()) {
+		if (esp32p4_psram_tries < ESP32P4_PSRAM_INIT_TRIES) {
+			esp32p4_psram_tries++;
+			ets_printf("PSRAM init failed (%u/%u), waiting for the RTC watchdog reset\n",
+				   (unsigned int)esp32p4_psram_tries, ESP32P4_PSRAM_INIT_TRIES);
+			esp32p4_psram_rwdt(true); /* fresh 2 s, whatever init left */
+			for (;;) {
+			}
+		}
+		esp32p4_psram_rwdt(false);
+		ets_printf("PSRAM init failed %u times in a row, continuing without PSRAM\n",
+			   ESP32P4_PSRAM_INIT_TRIES);
+#ifdef CONFIG_ESP_CONSOLE_UART_NUM
+		/* the UART driver resets the FIFO next; let the line out first */
+		esp_rom_output_tx_wait_idle(CONFIG_ESP_CONSOLE_UART_NUM);
+#endif
+	} else {
+		esp32p4_psram_tries = 0U;
+	}
 
 	if (esp_psram_smh_init()) {
 		printk("Failed to initialize PSRAM shared multi heap\n");
