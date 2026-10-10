@@ -891,12 +891,14 @@ SECTIONS
       *libsubsys__net__l2__ethernet.a:*
       *libsubsys__net__lib__config.a:*
       *libsubsys__net__ip.a:*
+      *libsubsys__net__lib__dns.a:*
       *libsubsys__net.a:* ) .noinit)
     *(EXCLUDE_FILE(
       *libdrivers__wifi.a:*
       *libsubsys__net__l2__ethernet.a:*
       *libsubsys__net__lib__config.a:*
       *libsubsys__net__ip.a:*
+      *libsubsys__net__lib__dns.a:*
       *libsubsys__net.a:* ) .noinit.*)
 #else
     *(.noinit)
@@ -1163,6 +1165,7 @@ SECTIONS
     *libsubsys__net__l2__ethernet.a:(.noinit .noinit.*)
     *libsubsys__net__lib__config.a:(.noinit .noinit.*)
     *libsubsys__net__ip.a:(.noinit .noinit.*)
+    *libsubsys__net__lib__dns.a:(.noinit .noinit.*)
     *libsubsys__net.a:(.noinit .noinit.*)
 #endif
     . = ALIGN(16);
