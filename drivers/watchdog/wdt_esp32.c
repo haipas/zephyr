@@ -16,6 +16,7 @@
 #include <soc/timer_group_reg.h>
 #include <hal/mwdt_ll.h>
 #include <hal/wdt_hal.h>
+#include <esp_clk_tree.h>
 
 #include <string.h>
 #include <zephyr/drivers/watchdog.h>
@@ -123,8 +124,24 @@ static int wdt_esp32_set_config(const struct device *dev, uint8_t options)
 	k_spinlock_key_t key = k_spin_lock(&data->lock);
 
 	wdt_esp32_unseal(dev);
-	wdt_hal_config_stage(&data->hal, WDT_STAGE0, data->timeout, WDT_STAGE_ACTION_INT);
-	wdt_hal_config_stage(&data->hal, WDT_STAGE1, data->timeout, data->mode);
+	if (data->callback != NULL) {
+		/* Stage 0 raises the interrupt that runs the callback, stage 1
+		 * takes the configured action one timeout later unless the
+		 * timer is fed in between. 3d local: before 3d-fw#1016 the ISR
+		 * fed the timer itself, so the callback repeated every timeout and
+		 * the action never came while interrupts ran; a callback user that
+		 * wants to survive must now feed (or disable) from the callback.
+		 */
+		wdt_hal_config_stage(&data->hal, WDT_STAGE0, data->timeout, WDT_STAGE_ACTION_INT);
+		wdt_hal_config_stage(&data->hal, WDT_STAGE1, data->timeout, data->mode);
+	} else {
+		/* 3d local: without a callback there is nobody to warn -- take the
+		 * action at the configured timeout itself, independent of whether
+		 * any CPU can still take interrupts.
+		 */
+		wdt_hal_config_stage(&data->hal, WDT_STAGE0, data->timeout, data->mode);
+		wdt_hal_config_stage(&data->hal, WDT_STAGE1, 0, WDT_STAGE_ACTION_OFF);
+	}
 	wdt_esp32_seal(dev);
 
 	wdt_esp32_enable_locked(dev);
@@ -143,7 +160,21 @@ static int wdt_esp32_install_timeout(const struct device *dev,
 		return -EINVAL;
 	}
 
-	data->timeout = cfg->window.max;
+	/* 3d local: window.max is in ms. The timer counts MWDT_CLK_SRC_DEFAULT /
+	 * MWDT_TICK_PRESCALER: 1 kHz only from a 40 MHz XTAL (ESP32-P4); the
+	 * APB-clocked ESP32/-S2/-S3 count at 2 kHz and a 48 MHz XTAL (ESP32-C5)
+	 * at 1.2 kHz, where the window used to be shorter than requested.
+	 */
+	uint32_t src_hz = 0;
+
+	if (esp_clk_tree_src_get_freq_hz((soc_module_clk_t)MWDT_CLK_SRC_DEFAULT,
+					 ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &src_hz) != ESP_OK ||
+	    src_hz == 0U) {
+		return -EINVAL;
+	}
+	uint64_t ticks = (uint64_t)cfg->window.max * src_hz / MWDT_TICK_PRESCALER / 1000U;
+
+	data->timeout = (uint32_t)MIN(MAX(ticks, 1U), UINT32_MAX);
 	data->callback = cfg->callback;
 
 	/* Set mode of watchdog and callback */
@@ -276,9 +307,14 @@ static void IRAM_ATTR wdt_esp32_isr(void *arg)
 		data->callback(dev, 0);
 	}
 
+	/* 3d local: only acknowledge the stage-0 interrupt. wdt_hal_handle_intr()
+	 * also feeds the timer, which restarted stage 0 on every expiry: as long
+	 * as this ISR could run, stage 1 (the reset) was never reached, so a
+	 * system that still took interrupts was never reset (3d-fw#1016).
+	 */
 	key = k_spin_lock(&data->lock);
 	wdt_esp32_unseal(dev);
-	wdt_hal_handle_intr(&data->hal);
+	mwdt_ll_clear_intr_status(data->hal.mwdt_dev);
 	wdt_esp32_seal(dev);
 	k_spin_unlock(&data->lock, key);
 }
