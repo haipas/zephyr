@@ -17,6 +17,22 @@ config SPI_ESP32_INTERRUPT
 	help
 	  Enables interrupt support for ESP32 SPI driver.
 
+config SPI_ESP32_DMA_BOUNCE_BYTES
+	int "Static DMA bounce buffer per controller for buffers the DMA cannot reach"
+	default 0
+	range 0 4092
+	help
+	  A transfer buffer the GDMA cannot read or write -- external PSRAM,
+	  an unaligned receive buffer -- is copied through a temporary buffer.
+	  By default that buffer is allocated from the system heap for every
+	  transfer (k_malloc of the transfer length), 16 allocations per 8 KiB
+	  written to an SD card over SPI. Above 0, each controller instance
+	  carries one static transmit and one static receive bounce buffer of
+	  this size and uses them for every such transfer that fits; longer
+	  transfers still take the heap path. 512 covers the block transfers of
+	  the SD card driver (sdhc_spi) from a PSRAM page. Internal RAM: twice
+	  this value per enabled controller.
+
 config ESP32_SPI_TARGET
 	bool "ESP32 SPI target mode"
 	select SPI_PERIPHERAL
