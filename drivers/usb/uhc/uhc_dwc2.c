@@ -157,6 +157,61 @@ static inline uint8_t calc_next_pid(const uint8_t pid, const uint32_t pkt_cnt)
 		USB_DWC2_HCTSIZ_PID_DATA0;
 }
 
+/*
+ * The host keeps the data toggle of every non-control endpoint, and the
+ * device resets its side to DATA0 on a bus reset, on SET_CONFIGURATION or
+ * SET_INTERFACE, and on CLEAR_FEATURE(ENDPOINT_HALT). The host side has to
+ * follow, or the first transaction after any of these goes out with a stale
+ * PID: the device acknowledges and drops an OUT packet as a retransmission,
+ * and the host drops an IN packet the same way, so the transfer never ends.
+ */
+static void ch_data_reset_all(struct uhc_dwc2_data *const priv)
+{
+	for (uint32_t idx = 0; idx < MAX_CHANNELS; idx++) {
+		priv->ch_data[0][idx].next_pid = USB_DWC2_HCTSIZ_PID_DATA0;
+		priv->ch_data[1][idx].next_pid = USB_DWC2_HCTSIZ_PID_DATA0;
+	}
+}
+
+static void ch_data_reset_ep(struct uhc_dwc2_data *const priv, const uint8_t ep)
+{
+	const uint8_t ep_idx = USB_EP_GET_IDX(ep);
+
+	if (ep_idx == 0U || ep_idx >= MAX_CHANNELS) {
+		return;
+	}
+
+	priv->ch_data[USB_EP_DIR_IS_IN(ep) ? 1 : 0][ep_idx].next_pid = USB_DWC2_HCTSIZ_PID_DATA0;
+}
+
+/* Follow the toggle resets a completed standard request causes on the device. */
+static void ch_data_track_request(struct uhc_dwc2_data *const priv,
+				  const struct usb_setup_packet *const setup)
+{
+	if (setup->RequestType.type != USB_REQTYPE_TYPE_STANDARD ||
+	    usb_reqtype_is_to_host(setup)) {
+		return;
+	}
+
+	switch (setup->bRequest) {
+	case USB_SREQ_CLEAR_FEATURE:
+		if (setup->RequestType.recipient == USB_REQTYPE_RECIPIENT_ENDPOINT &&
+		    sys_le16_to_cpu(setup->wValue) == USB_SFS_ENDPOINT_HALT) {
+			ch_data_reset_ep(priv, (uint8_t)sys_le16_to_cpu(setup->wIndex));
+		}
+		break;
+	case USB_SREQ_SET_CONFIGURATION:
+	case USB_SREQ_SET_INTERFACE:
+		/* Only one device is supported on the root port, so every
+		 * endpoint state belongs to it.
+		 */
+		ch_data_reset_all(priv);
+		break;
+	default:
+		break;
+	}
+}
+
 static inline void dwc2_set_reset(struct usb_dwc2_reg *const base, const bool reset)
 {
 	uint32_t hprt;
@@ -576,6 +631,12 @@ static int port_reset(const struct device *dev)
 	struct uhc_dwc2_data *const priv = uhc_get_private(dev);
 	struct usb_dwc2_reg *const base = uhc_dwc2_get_base(dev);
 	int ret;
+
+	/* A bus reset returns every endpoint of the device to DATA0, and a
+	 * device attached at runtime starts there too. Without this the
+	 * toggles left behind by the previous device carry over.
+	 */
+	ch_data_reset_all(priv);
 
 	/* Reset the port */
 	dwc2_set_reset(base, true);
@@ -1188,13 +1249,15 @@ static void ch_complete_bulk(const struct device *dev, struct uhc_dwc2_channel *
 
 static void ch_complete(const struct device *dev, struct uhc_dwc2_channel *ch)
 {
+	struct uhc_dwc2_data *const priv = uhc_get_private(dev);
 	struct uhc_transfer *const xfer = ch->xfer;
 	const struct usb_setup_packet *setup;
 
 	switch (xfer->type) {
 	case USB_EP_TYPE_CONTROL:
-		/* Apply a delay if request was Set Address */
 		setup = (const struct usb_setup_packet *)xfer->setup_pkt;
+		ch_data_track_request(priv, setup);
+		/* Apply a delay if request was Set Address */
 		if (setup->bRequest == USB_SREQ_SET_ADDRESS) {
 			k_msleep(SET_ADDR_DELAY_MS);
 		}
@@ -2135,9 +2198,9 @@ static int uhc_dwc2_init(const struct device *const dev)
 
 	for (uint32_t idx = 0; idx < MAX_CHANNELS; idx++) {
 		priv->ch[idx].length = 0;
-		priv->ch_data[0][idx].next_pid = USB_DWC2_HCTSIZ_PID_DATA0;
-		priv->ch_data[1][idx].next_pid = USB_DWC2_HCTSIZ_PID_DATA0;
 	}
+
+	ch_data_reset_all(priv);
 
 	ret = uhc_dwc2_quirk_pre_init(dev);
 	if (ret != 0) {
