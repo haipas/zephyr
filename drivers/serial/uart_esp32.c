@@ -1410,6 +1410,15 @@ static int uart_esp32_init(const struct device *dev)
 	clock_control_on(config->clock_dev, config->clock_subsys);
 	uart_ll_sclk_enable(data->hal.dev);
 
+#ifdef CONFIG_SOC_SERIES_ESP32S31
+	/*
+	 * Out of reset the FIFO memory of UART1..UART3 is in its low power
+	 * (shut down) state, so a TX byte is written and read back as 0x00.
+	 * Only UART0 is powered up, by the ROM bootloader.
+	 */
+	uart_ll_mem_force_power_on(uart_hal_get_port_num(&data->hal));
+#endif
+
 	ret = uart_esp32_configure(dev, &data->uart_config);
 	if (ret < 0) {
 		LOG_ERR("Error configuring UART (%d)", ret);
