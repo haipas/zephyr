@@ -491,6 +491,15 @@
 			status = "disabled";
 		};
 
+		twai1: can@20395000 {
+			compatible = "espressif,esp32-twaifd";
+			reg = <0x20395000 DT_SIZE_K(4)>;
+			interrupts = <TWAI1_INTR_SOURCE IRQ_DEFAULT_PRIORITY 0>;
+			interrupt-parent = <&intc>;
+			clocks = <&clock ESP32_TWAI1_MODULE>;
+			status = "disabled";
+		};
+
 		coretemp: coretemp@20818000 {
 			compatible = "espressif,esp32-temp";
 			friendly-name = "coretemp";
