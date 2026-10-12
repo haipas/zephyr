@@ -218,6 +218,11 @@ static int IRAM_ATTR spi_esp32_transfer(const struct device *dev)
 	size_t bit_len = transfer_len_bytes << 3;
 	uint8_t *rx_temp = NULL;
 	uint8_t *tx_temp = NULL;
+	/* Whether rx_temp/tx_temp point at the instance's static bounce buffers
+	 * (never freed) rather than at heap memory.
+	 */
+	bool rx_temp_static = false;
+	bool tx_temp_static = false;
 	size_t dma_len_tx = MIN(ctx->tx_len * data->dfs, SPI_DMA_MAX_BUFFER_SIZE);
 	size_t dma_len_rx = MIN(ctx->rx_len * data->dfs, SPI_DMA_MAX_BUFFER_SIZE);
 	bool prepare_data = true;
@@ -228,7 +233,15 @@ static int IRAM_ATTR spi_esp32_transfer(const struct device *dev)
 		bit_len = !bit_len ? 8 : bit_len;
 		if (ctx->tx_buf && !esp_ptr_dma_capable((uint32_t *)&ctx->tx_buf[0])) {
 			LOG_DBG("Tx buffer not DMA capable");
-			tx_temp = k_malloc(dma_len_tx);
+#if CONFIG_SPI_ESP32_DMA_BOUNCE_BYTES > 0
+			if (dma_len_tx <= sizeof(data->tx_bounce)) {
+				tx_temp = data->tx_bounce;
+				tx_temp_static = true;
+			}
+#endif
+			if (!tx_temp) {
+				tx_temp = k_malloc(dma_len_tx);
+			}
 			if (!tx_temp) {
 				LOG_ERR("Error allocating temp buffer Tx");
 				return -ENOMEM;
@@ -252,7 +265,15 @@ static int IRAM_ATTR spi_esp32_transfer(const struct device *dev)
 			 * corruption.
 			 */
 			LOG_DBG("Rx buffer not DMA capable");
-			rx_temp = k_calloc(((dma_len_rx << 3) + 31) / 8, sizeof(uint8_t));
+#if CONFIG_SPI_ESP32_DMA_BOUNCE_BYTES > 0
+			if (((dma_len_rx << 3) + 31) / 8 <= sizeof(data->rx_bounce)) {
+				rx_temp = data->rx_bounce;
+				rx_temp_static = true;
+			}
+#endif
+			if (!rx_temp) {
+				rx_temp = k_calloc(((dma_len_rx << 3) + 31) / 8, sizeof(uint8_t));
+			}
 			if (!rx_temp) {
 				LOG_ERR("Error allocating temp buffer Rx");
 				err = -ENOMEM;
@@ -424,8 +445,12 @@ static int IRAM_ATTR spi_esp32_transfer(const struct device *dev)
 	spi_context_update_rx(&data->ctx, data->dfs, transfer_len_frames);
 
 free:
-	k_free(tx_temp);
-	k_free(rx_temp);
+	if (!tx_temp_static) {
+		k_free(tx_temp);
+	}
+	if (!rx_temp_static) {
+		k_free(rx_temp);
+	}
 
 	return err;
 }
