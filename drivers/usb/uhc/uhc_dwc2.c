@@ -2292,11 +2292,16 @@ static int uhc_dwc2_disable(const struct device *const dev)
 {
 	const struct uhc_dwc2_config *const config = dev->config;
 	int ret;
-	/* TODO: Check ongoing transfer? */
 
 	submit_dev_gone(dev);
 
 	config->irq_disable_func(dev);
+
+	/* No completion can arrive for a transfer still queued once the port
+	 * is off, and the soft reset of the next enable drops the channel
+	 * state, so return them now, as a disconnect does.
+	 */
+	xfer_drop_queued(dev, -ENODEV);
 
 	port_disable(dev);
 
