@@ -856,6 +856,14 @@ SECTIONS
       *libsubsys__net__lib__config.a:*
       *libsubsys__net__ip.a:*
       *libsubsys__net.a:* ) .noinit.*)
+#elif defined(CONFIG_ESP_SPIRAM_NET_BUF_POOLS)
+    /* Slab buffers first: their free lists are built before PSRAM init.
+     * Everything else net_pkt.c keeps in .noinit (the net_buf data pools
+     * and headers) goes to .ext_ram.data below.
+     */
+    *(.noinit.*k_mem_slab_buf_*)
+    *(EXCLUDE_FILE(*libsubsys__net__ip.a:net_pkt.c.obj) .noinit)
+    *(EXCLUDE_FILE(*libsubsys__net__ip.a:net_pkt.c.obj) .noinit.*)
 #else
     *(.noinit)
     *(.noinit.*)
@@ -1158,6 +1166,9 @@ SECTIONS
     *libsubsys__net__lib__config.a:(.noinit .noinit.*)
     *libsubsys__net__ip.a:(.noinit .noinit.*)
     *libsubsys__net.a:(.noinit .noinit.*)
+#elif defined(CONFIG_ESP_SPIRAM_NET_BUF_POOLS)
+    . = ALIGN(16);
+    *libsubsys__net__ip.a:net_pkt.c.obj(.noinit .noinit.*)
 #endif
     . = ALIGN(16);
     *(.ext_ram_noinit.*)

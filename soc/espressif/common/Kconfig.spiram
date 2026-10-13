@@ -271,6 +271,19 @@ config ESP_SPIRAM_BSS_RELOC_LIBS_AND_OBJS
 	  Space-separated list of library or object file names (e.g. libfile.a or file.o). Their .bss segments
 	  will be placed in .ext_ram.data when CONFIG_ESP_SPIRAM is enabled. Leave empty to not relocate any BSS.
 
+config ESP_SPIRAM_NET_BUF_POOLS
+	bool "Place the network packet buffer pools in PSRAM"
+	depends on NETWORKING && NET_BUF_FIXED_DATA_SIZE && SOC_SERIES_ESP32S31
+	help
+	  Moves the .noinit content of subsys/net/ip/net_pkt.c except its
+	  kernel memory slabs -- the fixed-size RX/TX net_buf data pools and
+	  their net_buf headers -- into .ext_ram.data. Both pools are set up
+	  lazily on first allocation, after PSRAM is up; the net_pkt slabs
+	  build their free lists in init_mem_slab_module() before PSRAM init
+	  (PRE_KERNEL_1) and stay in SRAM. Only for network drivers that copy
+	  between net_bufs and their own DMA buffers (eth_esp32 and the esp32
+	  Wi-Fi driver both do). Not combinable with ESP32_WIFI_NET_ALLOC_SPIRAM.
+
 endmenu # Relocate BSS to PSRAM
 
 endmenu # ESP_SPIRAM
