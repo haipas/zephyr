@@ -24,6 +24,12 @@ LOG_MODULE_REGISTER(uhc_dwc2, CONFIG_UHC_DRIVER_LOG_LEVEL);
 #define SET_ADDR_DELAY_MS	CONFIG_UHC_DWC2_SET_ADDR_DELAY_MS
 #define MAX_CHANNELS		16
 
+/* The databook asks for at least 25 ms after setting GUSBCFG.FORCEHSTMODE
+ * before the mode change takes effect; GINTSTS.CURMOD is polled after that.
+ */
+#define FORCE_MODE_DELAY_MS	25
+#define HOST_MODE_TIMEOUT_MS	250
+
 enum uhc_dwc2_event {
 	/* A device has been connected to the port */
 	UHC_DWC2_EVENT_PORT_CONNECTION,
@@ -340,6 +346,49 @@ static void dwc2_config_timings(struct usb_dwc2_reg *const base)
 		frint);
 }
 
+static int dwc2_wait_for_host_mode(struct usb_dwc2_reg *const base)
+{
+	const mem_addr_t gintsts_reg = (mem_addr_t)&base->gintsts;
+	const int64_t start = k_uptime_get();
+	k_timepoint_t timepoint;
+	uint32_t elapsed_ms;
+
+	k_msleep(FORCE_MODE_DELAY_MS);
+
+	timepoint = sys_timepoint_calc(K_MSEC(HOST_MODE_TIMEOUT_MS));
+	while (true) {
+		/*
+		 * Sample the deadline before the register: the calling thread
+		 * can be preempted for longer than the timeout, and a deadline
+		 * checked after the read would then report a timeout for a
+		 * core that switched in the meantime.
+		 */
+		bool expired = sys_timepoint_expired(timepoint);
+
+		if (sys_read32(gintsts_reg) & USB_DWC2_GINTSTS_CURMOD) {
+			break;
+		}
+
+		if (expired) {
+			LOG_ERR("Wait for Host mode timeout, GINTSTS 0x%08x",
+				sys_read32(gintsts_reg));
+			return -ETIMEDOUT;
+		}
+
+		k_msleep(1);
+	}
+
+	elapsed_ms = (uint32_t)(k_uptime_get() - start);
+	if (elapsed_ms > FORCE_MODE_DELAY_MS + HOST_MODE_TIMEOUT_MS) {
+		LOG_WRN("Host mode after %u ms, past the %u ms timeout", elapsed_ms,
+			FORCE_MODE_DELAY_MS + HOST_MODE_TIMEOUT_MS);
+	} else {
+		LOG_INF("Host mode after %u ms", elapsed_ms);
+	}
+
+	return 0;
+}
+
 static inline int dwc2_core_init_host_gusbcfg(const struct device *dev)
 {
 	struct uhc_dwc2_data *const data = uhc_get_private(dev);
@@ -347,21 +396,16 @@ static inline int dwc2_core_init_host_gusbcfg(const struct device *dev)
 	uint32_t gusbcfg = sys_read32((mem_addr_t)&base->gusbcfg);
 	uint32_t ghwcfg2 = sys_read32((mem_addr_t)&base->ghwcfg2);
 	uint32_t ghwcfg4 = sys_read32((mem_addr_t)&base->ghwcfg4);
-	const k_timepoint_t timepoint = sys_timepoint_calc(K_MSEC(100));
+	int ret;
 
 	/* Force host mode as we do not support mode changes yet */
 	gusbcfg |= USB_DWC2_GUSBCFG_FORCEHSTMODE;
 	sys_write32(gusbcfg, (mem_addr_t)&base->gusbcfg);
 
 	/* Wait until core is in host mode */
-	while ((sys_read32((mem_addr_t)&base->gintsts) & USB_DWC2_GINTSTS_CURMOD) == 0) {
-		k_busy_wait(1);
-
-		if (sys_timepoint_expired(timepoint)) {
-			LOG_ERR("Wait for Host mode timeout, GINTSTS 0x%08x",
-				sys_read32((mem_addr_t)&base->gintsts));
-			return -ETIMEDOUT;
-		}
+	ret = dwc2_wait_for_host_mode(base);
+	if (ret != 0) {
+		return ret;
 	}
 
 	/* Store the actual number of channels */
@@ -2211,7 +2255,8 @@ static int uhc_dwc2_init(const struct device *const dev)
 	gsnpsid = sys_read32((mem_addr_t)&base->gsnpsid);
 	if (gsnpsid == 0) {
 		LOG_ERR("Unexpected GSNPSID 0x%08x", gsnpsid);
-		return -ENOTSUP;
+		ret = -ENOTSUP;
+		goto err_quirk_shutdown;
 	}
 
 	LOG_DBG("DWC2 Core rev. %04x", usb_dwc2_get_gsnpsid_rev(gsnpsid));
@@ -2219,13 +2264,13 @@ static int uhc_dwc2_init(const struct device *const dev)
 	ret = dwc2_core_soft_reset(dev);
 	if (ret != 0) {
 		LOG_ERR("DWC2 core reset failed after PHY init: %d", ret);
-		return ret;
+		goto err_quirk_shutdown;
 	}
 
 	ret = dwc2_core_init_host_gusbcfg(dev);
 	if (ret != 0) {
 		LOG_ERR("Unable to configure USB global register");
-		return ret;
+		goto err_quirk_shutdown;
 	}
 
 	/* All channels are free after (re-)initialization */
@@ -2235,7 +2280,7 @@ static int uhc_dwc2_init(const struct device *const dev)
 	if (ret != 0) {
 		/* TODO: Implement Slave Mode */
 		LOG_WRN("DMA isn't supported, but Slave Mode isn't implemented yet");
-		return ret;
+		goto err_quirk_shutdown;
 	}
 
 	hcfg = sys_read32((mem_addr_t)&base->hcfg);
@@ -2261,6 +2306,16 @@ static int uhc_dwc2_init(const struct device *const dev)
 	/* Clear status */
 	gintsts = sys_read32((mem_addr_t)&base->gintsts);
 	sys_write32(gintsts, (mem_addr_t)&base->gintsts);
+
+	return 0;
+
+err_quirk_shutdown:
+	/*
+	 * The controller is not marked initialized after a failed init, so
+	 * no shutdown follows. Undo the vendor setup here (interrupt, clocks,
+	 * PHY), otherwise a retried init allocates them a second time.
+	 */
+	(void)uhc_dwc2_quirk_shutdown(dev);
 
 	return ret;
 }
