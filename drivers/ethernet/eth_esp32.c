@@ -511,6 +511,36 @@ static int eth_esp32_send(const struct device *dev, struct net_pkt *pkt)
 	struct eth_esp32_dev_data *dev_data = dev->data;
 	size_t len = net_pkt_get_len(pkt);
 
+#if !defined(CONFIG_PTP_CLOCK_ESP32)
+	/*
+	 * A frame that fits one DMA buffer is read from the net_pkt straight
+	 * into the next TX descriptor's buffer instead of through txb: one
+	 * full-frame copy less per transmitted frame. send() runs under
+	 * net_if_tx_lock(), so dev_data->tx_desc is not raced.
+	 */
+	if (len <= CONFIG_ETH_ESP32_DMA_BUFFER_SIZE) {
+		k_timepoint_t until = sys_timepoint_calc(K_MSEC(100));
+		eth_dma_tx_descriptor_t *desc = dev_data->tx_desc;
+
+		while (desc->TDES0.Own != EMAC_LL_DMADESC_OWNER_CPU) {
+			if (k_sem_take(&dev_data->tx_sem, sys_timepoint_timeout(until)) != 0) {
+				return -EIO;
+			}
+		}
+		if (net_pkt_read(pkt, ADDR_DMA_TO_CPU(desc->Buffer1Addr), len)) {
+			return -EIO;
+		}
+		desc->TDES0.FirstSegment = 1;
+		desc->TDES0.LastSegment = 1;
+		desc->TDES1.TransmitBuffer1Size = len;
+		compiler_barrier();
+		desc->TDES0.Own = EMAC_LL_DMADESC_OWNER_DMA;
+		dev_data->tx_desc = tx_desc_next(dev_data, desc);
+		emac_hal_transmit_poll_demand(&dev_data->hal);
+		return 0;
+	}
+#endif
+
 	if (net_pkt_read(pkt, dev_data->txb, len)) {
 		return -EIO;
 	}
