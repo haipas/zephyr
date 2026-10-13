@@ -121,19 +121,42 @@ struct modem_cellular_event_cb {
  * configuration members before passing the object to @ref MODEM_CELLULAR_DEFINE_INSTANCE().
  * The cellular modem implementation owns and updates all other members after device initialization.
  */
+/**
+ * @brief Byte buffers of one cellular modem instance.
+ *
+ * Kept apart from @ref modem_cellular_data so a board can place them in
+ * another memory (for example external RAM) by defining
+ * MODEM_CELLULAR_BUFFERS_ATTR before including this header. They hold plain
+ * bytes only: no kernel object, spinlock or atomic lives here, so they may sit
+ * in memory that does not support atomic instructions (3d local).
+ */
+struct modem_cellular_buffers {
+	/** @cond INTERNAL_HIDDEN */
+	uint8_t uart_backend_receive_buf[CONFIG_MODEM_CELLULAR_UART_BUFFER_SIZES];
+	uint8_t uart_backend_transmit_buf[CONFIG_MODEM_CELLULAR_UART_BUFFER_SIZES];
+	uint8_t cmux_receive_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
+	uint8_t cmux_transmit_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
+	uint8_t dlci1_receive_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
+	/* DLCI 2 is only used for chat scripts. */
+	uint8_t dlci2_receive_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
+	uint8_t chat_receive_buf[CONFIG_MODEM_CELLULAR_CHAT_BUFFER_SIZE];
+	/** @endcond */
+};
+
+#ifndef MODEM_CELLULAR_BUFFERS_ATTR
+/** Placement attribute of every instance's @ref modem_cellular_buffers (3d local). */
+#define MODEM_CELLULAR_BUFFERS_ATTR
+#endif
+
 struct modem_cellular_data {
 	/** @cond INTERNAL_HIDDEN */
 	/* UART backend */
 	struct modem_pipe *uart_pipe;
 	struct modem_backend_uart uart_backend;
-	uint8_t uart_backend_receive_buf[CONFIG_MODEM_CELLULAR_UART_BUFFER_SIZES];
-	uint8_t uart_backend_transmit_buf[CONFIG_MODEM_CELLULAR_UART_BUFFER_SIZES];
 	uint32_t original_baudrate;
 
 	/* CMUX */
 	struct modem_cmux cmux;
-	uint8_t cmux_receive_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
-	uint8_t cmux_transmit_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
 
 	struct modem_cmux_dlci dlci1;
 	struct modem_cmux_dlci dlci2;
@@ -141,13 +164,9 @@ struct modem_cellular_data {
 	struct modem_pipe *dlci2_pipe;
 	/* Points to dlci1_pipe or NULL. Used for shutdown script if not NULL */
 	struct modem_pipe *cmd_pipe;
-	uint8_t dlci1_receive_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
-	/* DLCI 2 is only used for chat scripts. */
-	uint8_t dlci2_receive_buf[MODEM_CMUX_WORK_BUFFER_SIZE];
 
 	/* Modem chat */
 	struct modem_chat chat;
-	uint8_t chat_receive_buf[CONFIG_MODEM_CELLULAR_CHAT_BUFFER_SIZE];
 	uint8_t *chat_argv[32];
 	uint8_t script_failure_counter;
 	uint8_t recovery_count;
@@ -333,6 +352,7 @@ struct modem_cellular_config {
 	k_timeout_t cmux_idle_timeout;
 	struct modem_cellular_user_pipe *user_pipes;
 	uint8_t user_pipes_size;
+	struct modem_cellular_buffers *buffers;
 };
 
 /** @brief Initialize the cellular modem
@@ -570,6 +590,8 @@ void modem_cellular_chat_callback_handler(struct modem_chat *chat,
  */
 #define MODEM_CELLULAR_DEFINE_INSTANCE(inst, vendor_config, _vendor_specific)                      \
 	BUILD_ASSERT(vendor_config != NULL, "vendor_config must be non-NULL");                     \
+	MODEM_CELLULAR_BUFFERS_ATTR static struct modem_cellular_buffers                           \
+		MODEM_CELLULAR_INST_NAME(buffers, inst);                                           \
 	static const struct modem_cellular_config MODEM_CELLULAR_INST_NAME(config, inst) = {       \
 		.uart = DEVICE_DT_GET(DT_INST_BUS(inst)),                                          \
 		.vendor = vendor_config,                                                           \
@@ -599,6 +621,7 @@ void modem_cellular_chat_callback_handler(struct modem_chat *chat,
 		.cmux_idle_timeout = K_MSEC(DT_INST_PROP_OR(inst, cmux_idle_timeout_ms, 0)),       \
 		.user_pipes = MODEM_CELLULAR_GET_USER_PIPES(inst),                                 \
 		.user_pipes_size = ARRAY_SIZE(MODEM_CELLULAR_GET_USER_PIPES(inst)),                \
+		.buffers = &MODEM_CELLULAR_INST_NAME(buffers, inst),                               \
 	};                                                                                         \
                                                                                                    \
 	PM_DEVICE_DT_INST_DEFINE(inst, modem_cellular_pm_action);                                  \

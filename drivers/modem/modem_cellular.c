@@ -3130,10 +3130,10 @@ int modem_cellular_init(const struct device *dev)
 		const struct modem_backend_uart_config uart_backend_config = {
 			.uart = config->uart,
 			.dtr_gpio = dtr_gpio,
-			.receive_buf = data->uart_backend_receive_buf,
-			.receive_buf_size = ARRAY_SIZE(data->uart_backend_receive_buf),
-			.transmit_buf = data->uart_backend_transmit_buf,
-			.transmit_buf_size = ARRAY_SIZE(data->uart_backend_transmit_buf),
+			.receive_buf = config->buffers->uart_backend_receive_buf,
+			.receive_buf_size = ARRAY_SIZE(config->buffers->uart_backend_receive_buf),
+			.transmit_buf = config->buffers->uart_backend_transmit_buf,
+			.transmit_buf_size = ARRAY_SIZE(config->buffers->uart_backend_transmit_buf),
 		};
 
 		data->uart_pipe = modem_backend_uart_init(&data->uart_backend,
@@ -3146,10 +3146,10 @@ int modem_cellular_init(const struct device *dev)
 		const struct modem_cmux_config cmux_config = {
 			.callback = modem_cellular_cmux_handler,
 			.user_data = data,
-			.receive_buf = data->cmux_receive_buf,
-			.receive_buf_size = ARRAY_SIZE(data->cmux_receive_buf),
-			.transmit_buf = data->cmux_transmit_buf,
-			.transmit_buf_size = ARRAY_SIZE(data->cmux_transmit_buf),
+			.receive_buf = config->buffers->cmux_receive_buf,
+			.receive_buf_size = ARRAY_SIZE(config->buffers->cmux_receive_buf),
+			.transmit_buf = config->buffers->cmux_transmit_buf,
+			.transmit_buf_size = ARRAY_SIZE(config->buffers->cmux_transmit_buf),
 			.enable_runtime_power_management = config->cmux_enable_runtime_power_save,
 			.close_pipe_on_power_save = config->cmux_close_pipe_on_power_save,
 			.no_powersave_handshake = config->cmux_no_powersave_handshake,
@@ -3162,8 +3162,8 @@ int modem_cellular_init(const struct device *dev)
 	{
 		const struct modem_cmux_dlci_config dlci1_config = {
 			.dlci_address = 1,
-			.receive_buf = data->dlci1_receive_buf,
-			.receive_buf_size = ARRAY_SIZE(data->dlci1_receive_buf),
+			.receive_buf = config->buffers->dlci1_receive_buf,
+			.receive_buf_size = ARRAY_SIZE(config->buffers->dlci1_receive_buf),
 		};
 
 		data->dlci1_pipe = modem_cmux_dlci_init(&data->cmux, &data->dlci1,
@@ -3173,8 +3173,8 @@ int modem_cellular_init(const struct device *dev)
 	{
 		const struct modem_cmux_dlci_config dlci2_config = {
 			.dlci_address = 2,
-			.receive_buf = data->dlci2_receive_buf,
-			.receive_buf_size = ARRAY_SIZE(data->dlci2_receive_buf),
+			.receive_buf = config->buffers->dlci2_receive_buf,
+			.receive_buf_size = ARRAY_SIZE(config->buffers->dlci2_receive_buf),
 		};
 
 		data->dlci2_pipe = modem_cmux_dlci_init(&data->cmux, &data->dlci2,
@@ -3198,8 +3198,8 @@ int modem_cellular_init(const struct device *dev)
 	{
 		const struct modem_chat_config chat_config = {
 			.user_data = data,
-			.receive_buf = data->chat_receive_buf,
-			.receive_buf_size = ARRAY_SIZE(data->chat_receive_buf),
+			.receive_buf = config->buffers->chat_receive_buf,
+			.receive_buf_size = ARRAY_SIZE(config->buffers->chat_receive_buf),
 			.delimiter = (const uint8_t *)config->vendor->chat_delimiter,
 			.delimiter_size = strlen(config->vendor->chat_delimiter),
 			.filter = (const uint8_t *)config->vendor->chat_filter,
