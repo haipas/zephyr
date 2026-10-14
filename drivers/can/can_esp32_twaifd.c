@@ -666,10 +666,28 @@ static void IRAM_ATTR can_esp32_twaifd_isr(void *arg)
 	struct can_esp32_twaifd_data *data = dev->data;
 	uint32_t events;
 
+	/* twai_hal_get_events() clears the raw status it reads; keep it to tell a
+	 * data overrun apart from the bus errors the HAL folds it into.
+	 */
+	uint32_t raw = twaifd_ll_get_intr_status(data->hal.dev);
+
 	events = twai_hal_get_events(&data->hal);
 
 	if (events & TWAI_HAL_EVENT_RX_BUFF_FRAME) {
 		can_esp32_twaifd_handle_rx(dev);
+	}
+
+	if (raw & TWAIFD_LL_INTR_DATA_OVERRUN) {
+		/* The RX buffer was full and the controller dropped a frame. The
+		 * data overrun interrupt is raised again right after it is
+		 * cleared for as long as the overrun flag stays set, and only the
+		 * CDO command clears that flag: without it the interrupt fires
+		 * back to back, the core taking it never gets out of this ISR and
+		 * the other controller's buffer overflows behind it. Clear it once
+		 * the buffer has been drained above.
+		 */
+		twaifd_ll_set_operate_cmd(data->hal.dev, TWAIFD_LL_HW_CMD_CLR_OVERRUN);
+		CAN_STATS_RX_OVERRUN_INC(dev);
 	}
 
 	if (events & TWAI_HAL_EVENT_TX_BUFF_FREE) {
