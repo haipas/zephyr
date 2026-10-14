@@ -28,7 +28,7 @@ LOG_MODULE_REGISTER(uhc_dwc2, CONFIG_UHC_DRIVER_LOG_LEVEL);
  * before the mode change takes effect; GINTSTS.CURMOD is polled after that.
  */
 #define FORCE_MODE_DELAY_MS	25
-#define HOST_MODE_TIMEOUT_MS	250
+#define HOST_MODE_TIMEOUT_MS	575
 
 enum uhc_dwc2_event {
 	/* A device has been connected to the port */
