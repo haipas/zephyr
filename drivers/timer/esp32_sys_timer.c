@@ -212,6 +212,13 @@ static int sys_clock_driver_init(void)
 	systimer_hal_counter_can_stall_by_cpu(&systimer_hal, SYSTIMER_COUNTER_OS_TICK, 0, true);
 #if defined(CONFIG_SMP)
 	systimer_hal_counter_can_stall_by_cpu(&systimer_hal, SYSTIMER_COUNTER_OS_TICK, 1, true);
+#elif SOC_CPU_CORES_NUM > 1
+	/* A single-core image does not own the second core, but the counter's
+	 * reset default may stall by it: a second core left stalled by whatever
+	 * ran before (an SMP image's restart, a debugger) would freeze the tick
+	 * and hang the first k_busy_wait().
+	 */
+	systimer_hal_counter_can_stall_by_cpu(&systimer_hal, SYSTIMER_COUNTER_OS_TICK, 1, false);
 #endif
 
 	/* Seed the announce baseline from the systimer and arm the first tick. */
