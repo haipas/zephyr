@@ -15,6 +15,8 @@
 #include <rom/ets_sys.h>
 #include <hal/cpu_utility_ll.h>
 #include <soc/system_reg.h>
+#include <soc/lp_system_reg.h>
+#include <soc/hp_system_reg.h>
 #include <soc/soc.h>
 
 #include <esp32s31/rom/cache.h>
@@ -34,14 +36,33 @@
 			ESP_INTR_FLAG_IRAM,                                                        \
 		handler, NULL, NULL)
 
+/* CPU1 stores this marker in esp_appcpu_entry() once it runs our code, so
+ * CPU0 can tell a core that never left the ROM from a slow one.
+ */
+#define APPCPU_ALIVE_MAGIC      0x531A11FEU
+#define APPCPU_ALIVE_TIMEOUT_US 100000U
+
+volatile DRAM_ATTR uint32_t esp_appcpu_alive;
+
 /* CPU1 entry point jumped to by the ROM. Sets up the per-core CSRs and
  * continues into the generic RISC-V __initialize.
+ *
+ * The ROM boot-address register is in the LP domain and survives every reset
+ * short of a power cycle. After any later reset (watchdog, panic, software
+ * restart) CPU1 restarts in the ROM and jumps straight to a non-zero address,
+ * into whatever the 2nd stage bootloader keeps there by then. Clear it first,
+ * so the address is only set for the instant of this start.
  */
 void IRAM_ATTR __attribute__((naked, noreturn)) esp_appcpu_entry(void)
 {
 	__asm__ volatile(
 		/* Disable interrupts */
 		"csrci mstatus, 0x8\n"
+
+		/* Boot address back to 0: after a reset CPU1 waits in the ROM */
+		"li t0, %1\n"
+		"sw zero, 0(t0)\n"
+		"fence\n"
 
 		/* mtvec = _vector_table */
 		"la t0, _vector_table\n"
@@ -66,10 +87,13 @@ void IRAM_ATTR __attribute__((naked, noreturn)) esp_appcpu_entry(void)
 		".option pop\n"
 #endif
 
+		/* Tell CPU0 that this core runs our code. */
+		"la t0, esp_appcpu_alive\n"
+		"li t1, " STRINGIFY(APPCPU_ALIVE_MAGIC) "\n"
+		"sw t1, 0(t0)\n"
+
 		"j __initialize\n"
-#ifdef CONFIG_FPU
-		::"i"(MSTATUS_FS_INIT)
-#endif
+		::"i"(MSTATUS_FS_INIT), "i"(LP_SYSTEM_REG_BOOT_ADDR_HP_CORE1_REG)
 	);
 }
 
@@ -246,8 +270,28 @@ void soc_per_core_init_hook(void)
 }
 
 #ifdef CONFIG_SMP
+/* CPU1 was released before z_cstart() and has had all of PRE_KERNEL_1 to
+ * reach esp_appcpu_entry(). If it never did, end in a fatal error now instead
+ * of in the endless handshake of arch_cpu_start(): no watchdog is armed this
+ * early, so a silent spin is a dark board (ESP32-P4 counterpart: 3d-fw#865).
+ */
+static void appcpu_wait_alive(void)
+{
+	for (uint32_t waited_us = 0U; esp_appcpu_alive != APPCPU_ALIVE_MAGIC; waited_us += 10U) {
+		if (waited_us >= APPCPU_ALIVE_TIMEOUT_US) {
+			esp_rom_printf("esp32s31 smp: cpu1 did not start: boot_addr=%08x "
+				       "corestalled=%08x\n",
+				       REG_READ(LP_SYSTEM_REG_BOOT_ADDR_HP_CORE1_REG),
+				       REG_READ(HP_SYSTEM_CPU_CORESTALLED_ST_REG));
+			k_panic();
+		}
+		esp_rom_delay_us(10);
+	}
+}
+
 int arch_smp_init(void)
 {
+	appcpu_wait_alive();
 	register_ipi();
 	return 0;
 }
