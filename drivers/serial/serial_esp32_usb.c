@@ -195,7 +195,7 @@ static void serial_esp32_usb_irq_rx_enable(const struct device *dev)
 		unsigned int key = irq_lock();
 
 		data->irq_cb(dev, data->irq_cb_data);
-		arch_irq_unlock(key);
+		irq_unlock(key);
 	}
 }
 
