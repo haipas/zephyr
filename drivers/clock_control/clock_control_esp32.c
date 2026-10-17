@@ -11,6 +11,9 @@
 
 #if defined(CONFIG_SOC_SERIES_ESP32P4)
 #include <esp_private/esp_clk_tree_common.h>
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+#include <hal/clk_gate_ll.h>
+#endif
 #endif
 
 #include <zephyr/logging/log.h>
@@ -178,6 +181,19 @@ static int clock_control_esp32_init(const struct device *dev)
 	 * stalls the flash bus.
 	 */
 	esp_clk_tree_initialize();
+#endif
+
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* ESP32-C5 rev v1.0 (Waveshare ESP32-C5-Zero, haipas/3d-fw#1261) is
+	 * handed over with the 80 MHz PLL branch gated: PCR_PLL_DIV_CLK_EN
+	 * reads 0x23 at application start, and neither MCUboot nor the
+	 * application wrote it. esp_clk_tree_enable_src() cannot open it here,
+	 * because esp_clk_tree_initialize() is not run on this SoC. UART,
+	 * TWAI, GPTIMER and RMT default to PLL_F80M; without the branch the
+	 * UART's reg_update never syncs and uart_esp32_configure() spins in
+	 * uart_ll_update() forever. Restore the branch to its reset default.
+	 */
+	_clk_gate_ll_ref_80m_clk_en(true);
 #endif
 
 	esp_perip_clk_init();
