@@ -203,9 +203,11 @@ static int recv_data(struct net_socket_service_event *pev)
 	if (!dns_data) {
 		uint8_t discard;
 
-		/* Flush the pending datagram to release its net_pkt and avoid RX starvation. */
-		if (zsock_recvfrom(pev->event.fd, &discard, sizeof(discard), 0,
-				   NULL, NULL) < 0) {
+		/* Flush the pending datagram to release its net_pkt and avoid RX starvation.
+		 * Never block here: dispatcher->lock is held (3d local, haipas/3d-fw#968).
+		 */
+		if (zsock_recvfrom(pev->event.fd, &discard, sizeof(discard),
+				   ZSOCK_MSG_DONTWAIT, NULL, NULL) < 0) {
 			NET_DBG("DNS discard recv failed (%d)", errno);
 		}
 
@@ -213,10 +215,20 @@ static int recv_data(struct net_socket_service_event *pev)
 		goto unlock;
 	}
 
+	/* 3d local (haipas/3d-fw#968): a stale poll event -- the datagram is gone,
+	 * e.g. after the egress interface changed between WLAN and LTE -- must not
+	 * park the socket service thread in a blocking recv while it holds
+	 * dispatcher->lock: sysworkq then waits for that lock under ctx->lock and
+	 * every getaddrinfo() in the system blocks forever.
+	 */
 	ret = zsock_recvfrom(pev->event.fd, dns_data->data,
-			     net_buf_tailroom(dns_data), 0,
+			     net_buf_tailroom(dns_data), ZSOCK_MSG_DONTWAIT,
 			     net_sad(&addr), &addrlen);
 	if (ret < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			ret = 0;
+			goto free_buf;
+		}
 		ret = -errno;
 		NET_ERR("recv failed on IPv%d socket (%d)",
 			family == NET_AF_INET ? 4 : 6, -ret);
