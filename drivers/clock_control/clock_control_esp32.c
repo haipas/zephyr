@@ -11,9 +11,6 @@
 
 #if defined(CONFIG_SOC_SERIES_ESP32P4)
 #include <esp_private/esp_clk_tree_common.h>
-#if defined(CONFIG_SOC_SERIES_ESP32C5)
-#include <hal/clk_gate_ll.h>
-#endif
 #endif
 
 #include <zephyr/logging/log.h>
