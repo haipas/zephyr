@@ -180,6 +180,21 @@ static int clock_control_esp32_init(const struct device *dev)
 	esp_clk_tree_initialize();
 #endif
 
+#if defined(CONFIG_SOC_SERIES_ESP32C5)
+	/* The 80 MHz PLL branch survives a CPU or USB-UART system reset gated
+	 * if whatever ran before the reset gated it: PCR is not reset there.
+	 * Seen on an ESP32-C5 rev v1.0 (Waveshare ESP32-C5-Zero,
+	 * haipas/3d-fw#1261) after flashing: PCR_PLL_DIV_CLK_EN read 0x23 at
+	 * application start (0x1ff after a power cycle). Neither MCUboot nor
+	 * the application writes it, and esp_clk_tree_enable_src() cannot open
+	 * it here because esp_clk_tree_initialize() is not run on this SoC.
+	 * UART, TWAI, GPTIMER and RMT default to PLL_F80M; with the branch
+	 * gated the UART's reg_update never syncs and uart_esp32_configure()
+	 * spins in uart_ll_update() forever. Restore the reset default.
+	 */
+	_clk_gate_ll_ref_80m_clk_en(true);
+#endif
+
 	esp_perip_clk_init();
 
 	/*
