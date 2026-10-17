@@ -76,6 +76,16 @@ config NET_SOCKET_MAX_SEND_WAIT
 	  The maximum time a socket is waiting for a blocked connection before
 	  returning an ENOBUFS error.
 
+config NET_SOCKETS_DGRAM_RECV_Q_MAX
+	int "Maximum datagrams queued on one socket (0 = unlimited)"
+	default 4
+	help
+	  3d local (haipas/3d-fw#996). A datagram socket that is not read keeps
+	  every packet it is handed, and each one holds net RX buffers. Past
+	  this many queued datagrams a new one is dropped, as with a full
+	  socket receive buffer, so one stalled reader cannot starve the whole
+	  stack of RX buffers. 0 keeps the upstream behaviour (no limit).
+
 config NET_SOCKETS_SERVICE
 	bool "Socket service support"
 	select ZVFS
