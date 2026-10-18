@@ -262,6 +262,33 @@ int can_sja1000_get_max_filters(const struct device *dev, bool ide);
  */
 void can_sja1000_isr(const struct device *dev);
 
+/*
+ * 3d local (3d-fw#1277): the parts of can_sja1000_isr() a frontend needs when its
+ * interrupt only captures (an IRAM handler that keeps running while flash is
+ * written) and the rest runs later, with the cache on.
+ */
+
+/** Length of the receive buffer window: frame information, identifier and data. */
+#define CAN_SJA1000_RX_BUFFER_LEN 13U
+
+/**
+ * @brief Decode a captured receive buffer window (registers 16..28) into a frame.
+ */
+void can_sja1000_decode_rx_buffer(const uint8_t buf[CAN_SJA1000_RX_BUFFER_LEN],
+				  struct can_frame *frame);
+
+/**
+ * @brief Hand a received frame to every matching RX filter callback.
+ */
+void can_sja1000_rx_dispatch(const struct device *dev, struct can_frame *frame);
+
+/**
+ * @brief Handle the interrupt sources in @p ir except RI (receive): transmit done,
+ * data overrun, bus error, error warning and error passive, then the state change
+ * callbacks.
+ */
+void can_sja1000_handle_irq_status(const struct device *dev, uint8_t ir);
+
 /**
  * @brief SJA1000 driver initialization callback.
  *

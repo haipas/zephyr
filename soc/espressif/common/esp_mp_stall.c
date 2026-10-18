@@ -240,6 +240,11 @@ bool esp_mp_cpu_online(int cpu)
 	return s_cpu_up[cpu];
 }
 
+bool IRAM_ATTR esp_mp_stall_cpu_parked(int cpu)
+{
+	return s_stall_ack[cpu] != 0U;
+}
+
 void IRAM_ATTR esp_ipc_isr_stall_other_cpu(void)
 {
 	soc_mp_pause_others();
