@@ -206,10 +206,12 @@ config MODEM_PPP_3D_RX_STALL_S
 	  the modem stayed registered and its PDP context read active: every
 	  frame we sent was taken, nothing came back, until a DNS watchdog
 	  power cycled the modem minutes later. With a value above 0, a frame
-	  sent and no frame received for that many seconds since is treated
-	  like 'NO CARRIER': the carrier goes off, the cellular driver sees the
-	  PPP link dead and dials again (a fresh PDP context). A link that
-	  sends nothing is never dropped.
+	  sent and no frame received for that many seconds since drops the
+	  carrier like 'NO CARRIER' does, and modem_ppp_3d_take_rx_stall()
+	  reports it once: modem_cellular then restarts the modem the way it
+	  does after MODEM_CELLULAR_MAX_SCRIPT_FAILURES (the modem's own PPP is
+	  still up, so a plain redial on that DLCI would not be heard). A link
+	  that sends nothing is never dropped.
 
 config MODEM_PPP_NET_BUF_FRAG_SIZE
 	int "Network buffer fragment size"

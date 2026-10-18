@@ -667,11 +667,19 @@ static void modem_ppp_rx_stall_handler(struct k_work *item)
 		LOG_WRN("Sent for %lld s without receiving a frame, dropping the link (%u)",
 			(k_uptime_get() - since) / 1000, ppp->rx_stall_trips);
 		ppp->rx_stall_tx_since_ms = 0;
+		atomic_set(&ppp->rx_stall_pending, 1);
 		atomic_set_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT);
 		net_if_carrier_off(ppp->iface);
 		return;
 	}
 	modem_work_schedule(&ppp->rx_stall_work, K_SECONDS(1));
+}
+#endif
+
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+bool modem_ppp_3d_take_rx_stall(struct modem_ppp *ppp)
+{
+	return atomic_cas(&ppp->rx_stall_pending, 1, 0);
 }
 #endif
 

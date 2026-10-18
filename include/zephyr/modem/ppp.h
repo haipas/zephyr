@@ -111,6 +111,7 @@ struct modem_ppp {
 	struct k_work_delayable rx_stall_work;
 	int64_t rx_stall_tx_since_ms;
 	uint32_t rx_stall_trips;
+	atomic_t rx_stall_pending;
 #endif
 
 #if defined(CONFIG_NET_STATISTICS_PPP)
@@ -145,6 +146,14 @@ int modem_ppp_attach(struct modem_ppp *ppp, struct modem_pipe *pipe);
  * @param ppp Modem PPP instance
  * @returns Pointer to network interface modem PPP instance is bound to
  */
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+/**
+ * @brief 3d local: true once after the link was dropped for sending without receiving
+ * (CONFIG_MODEM_PPP_3D_RX_STALL_S), so the owner can recover harder than a redial.
+ */
+bool modem_ppp_3d_take_rx_stall(struct modem_ppp *ppp);
+#endif
+
 struct net_if *modem_ppp_get_iface(struct modem_ppp *ppp);
 
 /**

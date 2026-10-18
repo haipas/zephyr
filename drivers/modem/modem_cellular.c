@@ -2046,6 +2046,19 @@ static void modem_cellular_registered_event_handler(struct modem_cellular_data *
 		modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_AWAIT_PPP_DEAD);
 		break;
 	case MODEM_CELLULAR_EVENT_PPP_DEAD:
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+		/* 3d local: modem_ppp dropped a link that only sent. The modem's own
+		 * PPP is still up on the data DLCI, so recover like after too many
+		 * script failures.
+		 */
+		if (modem_ppp_3d_take_rx_stall(config->ppp)) {
+			net_if_carrier_off(modem_ppp_get_iface(config->ppp));
+			modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_IDLE);
+			modem_cellular_delegate_event(data, MODEM_CELLULAR_EVENT_RESUME);
+			LOG_WRN("PPP sent without receiving, restarting modem");
+			break;
+		}
+#endif
 		if (net_if_is_admin_up(modem_ppp_get_iface(config->ppp))) {
 			modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_AWAIT_PPP_DEAD);
 			modem_cellular_start_timer(data, MODEM_CELLULAR_PERIODIC_SCRIPT_TIMEOUT);
