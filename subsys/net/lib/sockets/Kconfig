@@ -138,6 +138,14 @@ config NET_SOCKETS_SERVICE_STACK_SIZE
 	help
 	  Set the internal stack size for the thread that polls sockets.
 
+config NET_SOCKETS_3D_LOG_TLS_ERRORS
+	bool "Log the mbedtls error that ends a TLS read at WRN (3d local)"
+	depends on NET_SOCKETS_SOCKOPT_TLS
+	help
+	  The read error is logged through NET_ERR only, in a module whose
+	  level is usually off. This logs the mbedtls code (e.g. -0x7180 bad
+	  record MAC, -0x7780 fatal alert) at WRN from its own log module.
+
 config NET_SOCKETS_SOCKOPT_TLS
 	bool "TCP TLS socket option support"
 	imply TLS_CREDENTIALS

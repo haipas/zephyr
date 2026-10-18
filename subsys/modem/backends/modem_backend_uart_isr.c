@@ -47,6 +47,15 @@ static void modem_backend_uart_isr_irq_handler_receive_ready(struct modem_backen
 	if (ret <= 0) {
 		return;
 	}
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S > 0
+	if (atomic_get(&backend->isr.sniff_state) == 2) {
+		uint16_t room = sizeof(backend->isr.sniff_buf) - backend->isr.sniff_len;
+		uint16_t take = MIN((uint16_t)ret, room);
+
+		memcpy(&backend->isr.sniff_buf[backend->isr.sniff_len], buffer, take);
+		backend->isr.sniff_len += take;
+	}
+#endif
 	ring_buf_commit(receive_rb, (uint32_t)ret);
 
 	if (ring_buf_space_get(receive_rb) > ring_buf_capacity_get(receive_rb) / 20) {
@@ -99,6 +108,11 @@ static void modem_backend_uart_isr_irq_handler(const struct device *uart, void *
 			}
 			if ((errors & ~UART_ERROR_OVERRUN) != 0) {
 				atomic_inc(&backend->isr.rx_other_errors);
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S > 0
+				if (atomic_cas(&backend->isr.sniff_state, 0, 1)) {
+					modem_work_reschedule(&backend->isr.sniff_work, K_NO_WAIT);
+				}
+#endif
 			}
 		}
 	}
@@ -114,6 +128,52 @@ static void modem_backend_uart_isr_irq_handler(const struct device *uart, void *
 		modem_backend_uart_isr_irq_handler_transmit_ready(backend);
 	}
 }
+
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S > 0
+/* Modem work queue. State 1: an error asked for a listen; 2: listening at 115200. */
+static void modem_backend_uart_isr_sniff_handler(struct k_work *item)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(item);
+	struct modem_backend_uart_isr *isr =
+		CONTAINER_OF(dwork, struct modem_backend_uart_isr, sniff_work);
+	struct modem_backend_uart *backend = CONTAINER_OF(isr, struct modem_backend_uart, isr);
+	struct uart_config cfg;
+
+	if (atomic_get(&isr->sniff_state) == 1) {
+		if ((k_uptime_get() < isr->sniff_not_before_ms) ||
+		    (uart_config_get(backend->uart, &cfg) < 0) || (cfg.baudrate <= 115200U)) {
+			/* At the factory rate already (our own power cycle), or too soon. */
+			atomic_set(&isr->sniff_state, 0);
+			return;
+		}
+		isr->sniff_saved_cfg = cfg;
+		cfg.baudrate = 115200U;
+		isr->sniff_len = 0;
+		atomic_set(&isr->sniff_state, 2);
+		(void)uart_configure(backend->uart, &cfg);
+		modem_work_reschedule(&isr->sniff_work,
+				      K_SECONDS(CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S));
+		return;
+	}
+	if (atomic_get(&isr->sniff_state) == 2) {
+		char text[sizeof(isr->sniff_buf) + 1];
+		uint16_t n = isr->sniff_len;
+
+		atomic_set(&isr->sniff_state, 3);
+		(void)uart_configure(backend->uart, &isr->sniff_saved_cfg);
+		for (uint16_t i = 0; i < n; i++) {
+			uint8_t ch = isr->sniff_buf[i];
+
+			text[i] = (ch == '\r' || ch == '\n') ? '|' : ((ch >= 0x20 && ch < 0x7f) ? ch : '.');
+		}
+		text[n] = '\0';
+		LOG_WRN("@115200 for %d s after a receive error (%u B): %s",
+			CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S, n, text);
+		isr->sniff_not_before_ms = k_uptime_get() + 60000;
+		atomic_set(&isr->sniff_state, 0);
+	}
+}
+#endif
 
 static int modem_backend_uart_isr_open(void *data)
 {
@@ -360,6 +420,10 @@ void modem_backend_uart_isr_init(struct modem_backend_uart *backend,
 		      config->transmit_buf);
 
 	atomic_set(&backend->isr.transmit_buf_len, 0);
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S > 0
+	atomic_set(&backend->isr.sniff_state, 0);
+	k_work_init_delayable(&backend->isr.sniff_work, modem_backend_uart_isr_sniff_handler);
+#endif
 	uart_irq_rx_disable(backend->uart);
 	uart_irq_tx_disable(backend->uart);
 	uart_irq_callback_user_data_set(backend->uart, modem_backend_uart_isr_irq_handler,
