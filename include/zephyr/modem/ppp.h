@@ -106,6 +106,13 @@ struct modem_ppp {
 	struct k_work send_work;
 	struct k_work process_work;
 
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+	/* 3d local: a link that sends but receives nothing is dropped */
+	struct k_work_delayable rx_stall_work;
+	int64_t rx_stall_tx_since_ms;
+	uint32_t rx_stall_trips;
+#endif
+
 #if defined(CONFIG_NET_STATISTICS_PPP)
 	struct net_stats_ppp stats;
 #endif

@@ -326,6 +326,9 @@ static void modem_ppp_process_received_byte(struct modem_ppp *ppp, uint8_t byte)
 			net_pkt_remove_tail(ppp->rx_pkt, MODEM_PPP_FRAME_TAIL_SIZE);
 			net_pkt_set_ppp(ppp->rx_pkt, true);
 
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+			ppp->rx_stall_tx_since_ms = 0;
+#endif
 			if (net_recv_data(ppp->iface, ppp->rx_pkt) < 0) {
 				LOG_WRN("Net pkt could not be processed");
 				net_pkt_unref(ppp->rx_pkt);
@@ -444,6 +447,11 @@ static void modem_ppp_send_handler(struct k_work *item)
 		if (ppp->transmit_state == MODEM_PPP_TRANSMIT_STATE_IDLE) {
 			LOG_DBG("Transmitting PPP frame (len %zu)", net_pkt_get_len(ppp->tx_pkt));
 			ppp->transmit_state = MODEM_PPP_TRANSMIT_STATE_SOF;
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+			if (ppp->rx_stall_tx_since_ms == 0) {
+				ppp->rx_stall_tx_since_ms = k_uptime_get();
+			}
+#endif
 		}
 
 		/* Claim as much space as possible */
@@ -642,6 +650,31 @@ const struct ppp_api modem_ppp_ppp_api = {
 #endif
 };
 
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+/* Runs on the modem work queue like the send and process handlers. */
+static void modem_ppp_rx_stall_handler(struct k_work *item)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(item);
+	struct modem_ppp *ppp = CONTAINER_OF(dwork, struct modem_ppp, rx_stall_work);
+	const int64_t since = ppp->rx_stall_tx_since_ms;
+
+	if (!atomic_test_bit(&ppp->state, MODEM_PPP_STATE_ATTACHED_BIT)) {
+		return;
+	}
+	if ((since != 0) && !atomic_test_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT) &&
+	    (k_uptime_get() - since >= CONFIG_MODEM_PPP_3D_RX_STALL_S * 1000LL)) {
+		ppp->rx_stall_trips++;
+		LOG_WRN("Sent for %lld s without receiving a frame, dropping the link (%u)",
+			(k_uptime_get() - since) / 1000, ppp->rx_stall_trips);
+		ppp->rx_stall_tx_since_ms = 0;
+		atomic_set_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT);
+		net_if_carrier_off(ppp->iface);
+		return;
+	}
+	modem_work_schedule(&ppp->rx_stall_work, K_SECONDS(1));
+}
+#endif
+
 int modem_ppp_attach(struct modem_ppp *ppp, struct modem_pipe *pipe)
 {
 	if (atomic_test_bit(&ppp->state, MODEM_PPP_STATE_ATTACHED_BIT) == true) {
@@ -655,6 +688,10 @@ int modem_ppp_attach(struct modem_ppp *ppp, struct modem_pipe *pipe)
 	atomic_clear(&ppp->state);
 	atomic_set_bit(&ppp->state, MODEM_PPP_STATE_ATTACHED_BIT);
 	net_if_carrier_on(ppp->iface);
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+	ppp->rx_stall_tx_since_ms = 0;
+	modem_work_schedule(&ppp->rx_stall_work, K_SECONDS(1));
+#endif
 	return 0;
 }
 
@@ -676,6 +713,9 @@ void modem_ppp_release(struct modem_ppp *ppp)
 	modem_pipe_release(ppp->pipe);
 	k_work_cancel_sync(&ppp->send_work, &sync);
 	k_work_cancel_sync(&ppp->process_work, &sync);
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+	k_work_cancel_delayable_sync(&ppp->rx_stall_work, &sync);
+#endif
 	ppp->pipe = NULL;
 	ppp->receive_state = MODEM_PPP_RECEIVE_STATE_HDR_SOF;
 
@@ -709,6 +749,9 @@ int modem_ppp_init_internal(const struct device *dev)
 	ring_buf_init(&ppp->transmit_rb, ppp->buf_size, ppp->transmit_buf);
 	k_work_init(&ppp->send_work, modem_ppp_send_handler);
 	k_work_init(&ppp->process_work, modem_ppp_process_handler);
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+	k_work_init_delayable(&ppp->rx_stall_work, modem_ppp_rx_stall_handler);
+#endif
 	k_fifo_init(&ppp->tx_pkt_fifo);
 
 #if CONFIG_MODEM_STATS

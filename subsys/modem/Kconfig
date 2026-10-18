@@ -196,6 +196,21 @@ config MODEM_PPP
 
 if MODEM_PPP
 
+config MODEM_PPP_3D_RX_STALL_S
+	int "Drop the link after sending for this long without receiving a frame (3d local, 0 = off)"
+	depends on MODEM_PPP
+	default 0
+	range 0 3600
+	help
+	  3d-fw: on the IO IND (SIMCom A7670) the data path went silent while
+	  the modem stayed registered and its PDP context read active: every
+	  frame we sent was taken, nothing came back, until a DNS watchdog
+	  power cycled the modem minutes later. With a value above 0, a frame
+	  sent and no frame received for that many seconds since is treated
+	  like 'NO CARRIER': the carrier goes off, the cellular driver sees the
+	  PPP link dead and dials again (a fresh PDP context). A link that
+	  sends nothing is never dropped.
+
 config MODEM_PPP_NET_BUF_FRAG_SIZE
 	int "Network buffer fragment size"
 	default NET_BUF_DATA_SIZE if NET_BUF_FIXED_DATA_SIZE
