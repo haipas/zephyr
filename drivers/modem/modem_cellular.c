@@ -730,11 +730,19 @@ void modem_cellular_chat_on_cgev(struct modem_chat *chat, char **argv, uint16_t 
 	 * +CGEV: ME DEACT <p_cid>, <cid>, <event_type>
 	 */
 
-	if (strstr(argv[0], " ACT")) {
-		connected = true;
-	} else if ((strstr(argv[0], "DETACH")) ||
-		   (strstr(argv[0], "DEACT"))) {
+	/* 3d local: argv[0] is the match itself ("+CGEV: "), the event is argv[1]
+	 * (the first comma-separated field), so the checks below never matched and
+	 * a PDN deactivation was dropped. Only the network's DETACH/DEACT counts as a
+	 * loss: "ME" events are the driver's own (AT+CGACT=0 in a dial script).
+	 */
+	if (argc < 2) {
+		return;
+	}
+	if ((strncmp(argv[1], "NW ", 3) == 0) &&
+	    ((strstr(argv[1], "DETACH") != NULL) || (strstr(argv[1], "DEACT") != NULL))) {
 		connected = false;
+	} else if ((strstr(argv[1], "DEACT") == NULL) && (strstr(argv[1], " ACT") != NULL)) {
+		connected = true;
 	} else {
 		return;
 	}
