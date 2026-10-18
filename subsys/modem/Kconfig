@@ -202,6 +202,8 @@ config MODEM_PPP_3D_RX_STALL_S
 	default 0
 	range 0 3600
 	help
+	  At least 4 frames sent since the last received one, the time counted
+	  from the second (the first may be a bare TCP ACK).
 	  3d-fw: on the IO IND (SIMCom A7670) the data path went silent while
 	  the modem stayed registered and its PDP context read active: every
 	  frame we sent was taken, nothing came back, until a DNS watchdog

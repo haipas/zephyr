@@ -328,6 +328,7 @@ static void modem_ppp_process_received_byte(struct modem_ppp *ppp, uint8_t byte)
 
 #if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
 			ppp->rx_stall_tx_since_ms = 0;
+			ppp->rx_stall_tx_frames = 0;
 #endif
 			if (net_recv_data(ppp->iface, ppp->rx_pkt) < 0) {
 				LOG_WRN("Net pkt could not be processed");
@@ -448,7 +449,11 @@ static void modem_ppp_send_handler(struct k_work *item)
 			LOG_DBG("Transmitting PPP frame (len %zu)", net_pkt_get_len(ppp->tx_pkt));
 			ppp->transmit_state = MODEM_PPP_TRANSMIT_STATE_SOF;
 #if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
-			if (ppp->rx_stall_tx_since_ms == 0) {
+			/* The first frame after a received one may be a bare TCP ACK or a
+			 * datagram nobody answers: the clock starts with the second.
+			 */
+			ppp->rx_stall_tx_frames++;
+			if ((ppp->rx_stall_tx_frames == 2U) && (ppp->rx_stall_tx_since_ms == 0)) {
 				ppp->rx_stall_tx_since_ms = k_uptime_get();
 			}
 #endif
@@ -651,6 +656,11 @@ const struct ppp_api modem_ppp_ppp_api = {
 };
 
 #if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+/* A quiet healthy link sends at most a bare ACK and the next keepalive before an
+ * answer; a dead one piles up the keepalive, its TCP retransmissions and DNS.
+ */
+#define MODEM_PPP_3D_RX_STALL_MIN_FRAMES 4U
+
 /* Runs on the modem work queue like the send and process handlers. */
 static void modem_ppp_rx_stall_handler(struct k_work *item)
 {
@@ -661,12 +671,15 @@ static void modem_ppp_rx_stall_handler(struct k_work *item)
 	if (!atomic_test_bit(&ppp->state, MODEM_PPP_STATE_ATTACHED_BIT)) {
 		return;
 	}
-	if ((since != 0) && !atomic_test_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT) &&
+	if ((since != 0) && (ppp->rx_stall_tx_frames >= MODEM_PPP_3D_RX_STALL_MIN_FRAMES) &&
+	    !atomic_test_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT) &&
 	    (k_uptime_get() - since >= CONFIG_MODEM_PPP_3D_RX_STALL_S * 1000LL)) {
 		ppp->rx_stall_trips++;
-		LOG_WRN("Sent for %lld s without receiving a frame, dropping the link (%u)",
-			(k_uptime_get() - since) / 1000, ppp->rx_stall_trips);
+		LOG_WRN("%u frames sent in %lld s, none received: dropping the link (%u)",
+			ppp->rx_stall_tx_frames, (k_uptime_get() - since) / 1000,
+			ppp->rx_stall_trips);
 		ppp->rx_stall_tx_since_ms = 0;
+		ppp->rx_stall_tx_frames = 0;
 		atomic_set(&ppp->rx_stall_pending, 1);
 		atomic_set_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT);
 		net_if_carrier_off(ppp->iface);
@@ -698,6 +711,7 @@ int modem_ppp_attach(struct modem_ppp *ppp, struct modem_pipe *pipe)
 	net_if_carrier_on(ppp->iface);
 #if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
 	ppp->rx_stall_tx_since_ms = 0;
+	ppp->rx_stall_tx_frames = 0;
 	modem_work_schedule(&ppp->rx_stall_work, K_SECONDS(1));
 #endif
 	return 0;

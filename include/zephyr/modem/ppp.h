@@ -110,6 +110,7 @@ struct modem_ppp {
 	/* 3d local: a link that sends but receives nothing is dropped */
 	struct k_work_delayable rx_stall_work;
 	int64_t rx_stall_tx_since_ms;
+	uint32_t rx_stall_tx_frames;
 	uint32_t rx_stall_trips;
 	atomic_t rx_stall_pending;
 #endif
