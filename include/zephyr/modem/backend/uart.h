@@ -39,6 +39,7 @@ struct modem_backend_uart_isr {
 #if CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S > 0
 	/* 3d local: listen at the factory rate after a receive error burst */
 	atomic_t sniff_state;
+	atomic_val_t sniff_err_base;
 	uint16_t sniff_len;
 	uint8_t sniff_buf[80];
 	struct uart_config sniff_saved_cfg;

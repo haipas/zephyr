@@ -38,8 +38,9 @@ config MODEM_BACKEND_UART_ISR_3D_SNIFF_S
 	help
 	  Bench diagnostics. A modem that restarts on its own comes back at its
 	  factory rate while the host still listens at the raised one: its boot
-	  lines arrive as framing errors. With a value above 0, the first
-	  receive error (other than an overrun) while the UART runs above 115200
+	  lines arrive as framing errors. With a value above 0, a burst of
+	  receive errors (3 other than overruns since the last listen) while
+	  the UART runs above 115200
 	  switches it to 115200 for that many seconds, keeps the first 80 bytes
 	  received, restores the previous configuration and logs them as text
 	  (WRN). At most once a minute.

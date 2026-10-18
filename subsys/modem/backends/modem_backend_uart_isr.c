@@ -109,7 +109,10 @@ static void modem_backend_uart_isr_irq_handler(const struct device *uart, void *
 			if ((errors & ~UART_ERROR_OVERRUN) != 0) {
 				atomic_inc(&backend->isr.rx_other_errors);
 #if CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S > 0
-				if (atomic_cas(&backend->isr.sniff_state, 0, 1)) {
+				/* A burst, not one stray bit: 3 errors since the last listen. */
+				if ((atomic_get(&backend->isr.rx_other_errors) -
+				     backend->isr.sniff_err_base >= 3) &&
+				    atomic_cas(&backend->isr.sniff_state, 0, 1)) {
 					modem_work_reschedule(&backend->isr.sniff_work, K_NO_WAIT);
 				}
 #endif
@@ -143,6 +146,7 @@ static void modem_backend_uart_isr_sniff_handler(struct k_work *item)
 		if ((k_uptime_get() < isr->sniff_not_before_ms) ||
 		    (uart_config_get(backend->uart, &cfg) < 0) || (cfg.baudrate <= 115200U)) {
 			/* At the factory rate already (our own power cycle), or too soon. */
+			isr->sniff_err_base = atomic_get(&isr->rx_other_errors);
 			atomic_set(&isr->sniff_state, 0);
 			return;
 		}
@@ -170,6 +174,7 @@ static void modem_backend_uart_isr_sniff_handler(struct k_work *item)
 		LOG_WRN("@115200 for %d s after a receive error (%u B): %s",
 			CONFIG_MODEM_BACKEND_UART_ISR_3D_SNIFF_S, n, text);
 		isr->sniff_not_before_ms = k_uptime_get() + 60000;
+		isr->sniff_err_base = atomic_get(&isr->rx_other_errors);
 		atomic_set(&isr->sniff_state, 0);
 	}
 }
