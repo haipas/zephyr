@@ -546,11 +546,62 @@ int can_sja1000_get_max_filters(const struct device *dev, bool ide)
 	return CONFIG_CAN_SJA1000_MAX_FILTERS;
 }
 
+void can_sja1000_rx_dispatch(const struct device *dev, struct can_frame *frame)
+{
+	struct can_sja1000_data *data = dev->data;
+	can_rx_callback_t callback;
+
+#ifndef CONFIG_CAN_ACCEPT_RTR
+	if ((frame->flags & CAN_FRAME_RTR) != 0U) {
+		return;
+	}
+#endif /* !CONFIG_CAN_ACCEPT_RTR */
+	for (int i = 0; i < ARRAY_SIZE(data->filters); i++) {
+		if (!atomic_test_bit(data->rx_allocs, i)) {
+			continue;
+		}
+
+		if (can_frame_matches_filter(frame, &data->filters[i].filter)) {
+			callback = data->filters[i].callback;
+			if (callback != NULL) {
+				callback(dev, frame, data->filters[i].user_data);
+			}
+		}
+	}
+}
+
+void can_sja1000_decode_rx_buffer(const uint8_t buf[CAN_SJA1000_RX_BUFFER_LEN],
+				  struct can_frame *frame)
+{
+	const uint8_t info = buf[0];
+	const uint8_t *payload;
+
+	memset(frame, 0, sizeof(*frame));
+	if ((info & CAN_SJA1000_FRAME_INFO_RTR) != 0) {
+		frame->flags |= CAN_FRAME_RTR;
+	}
+	frame->dlc = MIN(CAN_SJA1000_FRAME_INFO_DLC_GET(info), CAN_MAX_DLC);
+	if ((info & CAN_SJA1000_FRAME_INFO_FF) != 0) {
+		frame->flags |= CAN_FRAME_IDE;
+		frame->id = FIELD_PREP(GENMASK(28, 21), buf[1]) |
+			    FIELD_PREP(GENMASK(20, 13), buf[2]) |
+			    FIELD_PREP(GENMASK(12, 5), buf[3]) |
+			    FIELD_PREP(GENMASK(4, 0), buf[4] >> 3);
+		payload = &buf[CAN_SJA1000_EFF_DATA - CAN_SJA1000_FRAME_INFO];
+	} else {
+		frame->id = FIELD_PREP(GENMASK(10, 3), buf[1]) |
+			    FIELD_PREP(GENMASK(2, 0), buf[2] >> 5);
+		payload = &buf[CAN_SJA1000_SFF_DATA - CAN_SJA1000_FRAME_INFO];
+	}
+	if ((frame->flags & CAN_FRAME_RTR) == 0U) {
+		memcpy(frame->data, payload, frame->dlc);
+	}
+}
+
 static void can_sja1000_handle_receive_irq(const struct device *dev)
 {
 	struct can_sja1000_data *data = dev->data;
 	struct can_frame frame;
-	can_rx_callback_t callback;
 	uint8_t sr;
 
 	do {
@@ -560,24 +611,7 @@ static void can_sja1000_handle_receive_irq(const struct device *dev)
 		can_sja1000_write_reg(dev, CAN_SJA1000_CMR, CAN_SJA1000_CMR_RRB);
 		k_spin_unlock(&data->buf_lock, key);
 
-#ifndef CONFIG_CAN_ACCEPT_RTR
-		if ((frame.flags & CAN_FRAME_RTR) == 0U) {
-#endif /* !CONFIG_CAN_ACCEPT_RTR */
-			for (int i = 0; i < ARRAY_SIZE(data->filters); i++) {
-				if (!atomic_test_bit(data->rx_allocs, i)) {
-					continue;
-				}
-
-				if (can_frame_matches_filter(&frame, &data->filters[i].filter)) {
-					callback = data->filters[i].callback;
-					if (callback != NULL) {
-						callback(dev, &frame, data->filters[i].user_data);
-					}
-				}
-			}
-#ifndef CONFIG_CAN_ACCEPT_RTR
-		}
-#endif /* !CONFIG_CAN_ACCEPT_RTR */
+		can_sja1000_rx_dispatch(dev, &frame);
 
 		sr = can_sja1000_read_reg(dev, CAN_SJA1000_SR);
 	} while ((sr & CAN_SJA1000_SR_RBS) != 0);
@@ -683,19 +717,28 @@ static void can_sja1000_handle_error_passive_irq(const struct device *dev)
 
 void can_sja1000_isr(const struct device *dev)
 {
+	uint8_t ir = can_sja1000_read_reg(dev, CAN_SJA1000_IR);
+
+	if ((ir & CAN_SJA1000_IR_RI) != 0) {
+		/* Transmit done first, as before: handle_irq_status() runs it. */
+		if ((ir & CAN_SJA1000_IR_TI) != 0) {
+			can_sja1000_handle_transmit_irq(dev);
+			ir &= ~CAN_SJA1000_IR_TI;
+		}
+		can_sja1000_handle_receive_irq(dev);
+	}
+
+	can_sja1000_handle_irq_status(dev, ir & ~CAN_SJA1000_IR_RI);
+}
+
+void can_sja1000_handle_irq_status(const struct device *dev, uint8_t ir)
+{
 	struct can_sja1000_data *data = dev->data;
 	enum can_state prev_state = data->state;
 	struct can_bus_err_cnt err_cnt;
-	uint8_t ir;
-
-	ir = can_sja1000_read_reg(dev, CAN_SJA1000_IR);
 
 	if ((ir & CAN_SJA1000_IR_TI) != 0) {
 		can_sja1000_handle_transmit_irq(dev);
-	}
-
-	if ((ir & CAN_SJA1000_IR_RI) != 0) {
-		can_sja1000_handle_receive_irq(dev);
 	}
 
 #ifdef CONFIG_CAN_STATS

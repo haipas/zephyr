@@ -63,6 +63,21 @@ void esp_mp_set_cpu_online(int cpu, bool online);
 bool esp_mp_cpu_online(int cpu);
 
 /**
+ * @brief Return whether a core sits parked in its stall ISR (3d local)
+ *
+ * IRAM, safe with the cache off. An interrupt handler that keeps running while
+ * the other core has the cache suspended (ESP_INTR_FLAG_IRAM, above the stall
+ * IPI's level) checks this before it touches flash code or PSRAM: true from the
+ * stall acknowledgment until the core leaves the stall, which brackets the
+ * whole cache-off window of the other core.
+ *
+ * @param cpu Core number
+ *
+ * @return true while @p cpu is parked
+ */
+bool esp_mp_stall_cpu_parked(int cpu);
+
+/**
  * @brief Arm the protocol
  *
  */

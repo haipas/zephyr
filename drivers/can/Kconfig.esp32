@@ -14,6 +14,64 @@ config CAN_ESP32_TWAI
 	  This enables support for the Espressif Two-Wire Automotive Interface
 	  (TWAI) CAN driver.
 
+config CAN_ESP32_TWAI_RX_IRAM
+	bool "TWAI receive that keeps running while flash is written (3d local)"
+	depends on CAN_ESP32_TWAI && SMP && SCHED_CPU_MASK && MP_MAX_NUM_CPUS > 1
+	depends on !TICKET_SPINLOCKS && !SPIN_VALIDATE
+	help
+	  3d-fw#1277. A flash operation locks the interrupts of its core and
+	  parks the other core with its non-IRAM interrupts masked, so the
+	  TWAI interrupt (flash code) was blind for a whole erase, the 64-byte
+	  RX FIFO overran and the frames behind the overrun were read with
+	  wrong data. With this option the TWAI interrupt is allocated as an
+	  IRAM interrupt at CAN_ESP32_TWAI_RX_IRAM_LEVEL on
+	  CAN_ESP32_TWAI_RX_IRAM_CPU (from a thread pinned there): its handler
+	  copies every frame into a ring in internal RAM and releases overrun
+	  frames (TWAI_MISS_ST) unread. Decoding, the RX filter callbacks and
+	  the transmit/error handling run from the same handler when that core
+	  is not parked, else from the thread. Every flash operation must run
+	  on the other core.
+
+if CAN_ESP32_TWAI_RX_IRAM
+
+config CAN_ESP32_TWAI_RX_IRAM_CPU
+	int "Core the TWAI interrupt is allocated on"
+	default 1
+	range 0 1
+
+config CAN_ESP32_TWAI_RX_IRAM_LEVEL
+	int "Interrupt level of the TWAI interrupt"
+	default 2
+	range 2 3
+	help
+	  Above the level-1 stall IPI that parks the core during the other
+	  core's flash operation. 2 lets a level-3 interrupt (the 1 ms cycle)
+	  preempt it.
+
+config CAN_ESP32_TWAI_RX_RING_FRAMES
+	int "Frames the internal receive ring holds (power of two)"
+	default 128
+	help
+	  13 bytes each. Must cover the longest cache-off window at the
+	  highest frame rate: 128 frames are 128 ms at 1000 frames/s.
+
+config CAN_ESP32_TWAI_RX_POLL_MS
+	int "How often the thread hands on frames left over from a stall (ms)"
+	default 5
+	range 1 100
+
+config CAN_ESP32_TWAI_RX_THREAD_STACK_SIZE
+	int "Stack of the TWAI receive thread"
+	default 2048
+	help
+	  The RX filter callbacks run on it for frames left over from a stall.
+
+config CAN_ESP32_TWAI_RX_THREAD_PRIORITY
+	int "Priority of the TWAI receive thread (preemptible)"
+	default 8
+
+endif # CAN_ESP32_TWAI_RX_IRAM
+
 config CAN_ESP32_TWAIFD
 	bool "Espressif TWAI-FD CAN driver"
 	default y
