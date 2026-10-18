@@ -89,6 +89,21 @@ static void modem_backend_uart_isr_irq_handler(const struct device *uart, void *
 {
 	struct modem_backend_uart *backend = (struct modem_backend_uart *)user_data;
 
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	{
+		const int errors = uart_err_check(uart);
+
+		if (errors > 0) {
+			if ((errors & UART_ERROR_OVERRUN) != 0) {
+				atomic_inc(&backend->isr.rx_overruns);
+			}
+			if ((errors & ~UART_ERROR_OVERRUN) != 0) {
+				atomic_inc(&backend->isr.rx_other_errors);
+			}
+		}
+	}
+#endif
+
 	uart_irq_update(uart);
 
 	if (uart_irq_rx_ready(uart)) {
@@ -123,6 +138,9 @@ static int modem_backend_uart_isr_open(void *data)
 	if (backend->dtr_gpio) {
 		gpio_pin_set_dt(backend->dtr_gpio, 1);
 	}
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	uart_irq_err_enable(backend->uart);
+#endif
 	uart_irq_rx_enable(backend->uart);
 	uart_irq_tx_enable(backend->uart);
 	modem_pipe_notify_opened(&backend->pipe);
@@ -209,12 +227,38 @@ static int modem_backend_uart_isr_transmit_chain(void *data,
 	return written;
 }
 
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+/* Thread context (the pipe's reader): log what the interrupt handler counted. */
+static void modem_backend_uart_isr_report_errors(struct modem_backend_uart *backend)
+{
+	const uint32_t overruns = (uint32_t)atomic_get(&backend->isr.rx_overruns);
+	const uint32_t others = (uint32_t)atomic_get(&backend->isr.rx_other_errors);
+	const int64_t now = k_uptime_get();
+
+	if ((overruns == backend->isr.rx_overruns_reported &&
+	     others == backend->isr.rx_other_errors_reported) ||
+	    now < backend->isr.rx_errors_next_report_ms) {
+		return;
+	}
+	LOG_WRN("UART receive errors: %u FIFO overruns (+%u), %u other (+%u)", overruns,
+		overruns - backend->isr.rx_overruns_reported, others,
+		others - backend->isr.rx_other_errors_reported);
+	backend->isr.rx_overruns_reported = overruns;
+	backend->isr.rx_other_errors_reported = others;
+	backend->isr.rx_errors_next_report_ms = now + 10000;
+}
+#endif
+
 static int modem_backend_uart_isr_receive(void *data, uint8_t *buf, size_t size)
 {
 	struct modem_backend_uart *backend = (struct modem_backend_uart *)data;
 
 	uint32_t read_bytes;
 	uint8_t receive_rdb_unused;
+
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	modem_backend_uart_isr_report_errors(backend);
+#endif
 
 #if CONFIG_MODEM_STATS
 	advertise_receive_buf_stats(backend);

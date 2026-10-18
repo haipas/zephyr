@@ -23,6 +23,13 @@ config MODEM_BACKEND_UART_ASYNC
 
 if MODEM_BACKEND_UART_ISR
 
+config MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	bool "Count UART receive errors and log them (3d local)"
+	help
+	  Enables the UART error interrupts, counts receive FIFO overruns
+	  (bytes lost before the driver could read them) and other receive
+	  errors, and logs a WRN line at most every 10 s while they grow.
+
 config MODEM_BACKEND_UART_ISR_RECEIVE_IDLE_TIMEOUT_MS
 	int "Modem ISR UART delay between first byte received and RECEIVE_READY pipe event"
 	default 20

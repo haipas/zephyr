@@ -28,6 +28,14 @@ struct modem_backend_uart_isr {
 	atomic_t receive_buf_len;
 	uint8_t receive_rdb_used;
 	uint32_t transmit_buf_put_limit;
+#if CONFIG_MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	/* 3d local: UART receive errors seen by the interrupt handler */
+	atomic_t rx_overruns;
+	atomic_t rx_other_errors;
+	uint32_t rx_overruns_reported;
+	uint32_t rx_other_errors_reported;
+	int64_t rx_errors_next_report_ms;
+#endif
 };
 
 struct modem_backend_uart_async_common {

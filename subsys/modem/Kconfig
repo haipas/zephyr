@@ -125,6 +125,48 @@ config MODEM_CMUX_T3_TIMEOUT
 	  Response Timer for wake-up procedure(T3).
 	  Time in seconds before the link is considered dead.
 
+config MODEM_CMUX_3D_DIAG
+	bool "Per-DLCI counters and flow control transitions in the log (3d local)"
+	help
+	  3d-fw: an LTE data path (PPP on one DLCI) went silent while the AT
+	  DLCI kept answering, and every message that would tell why (MSC flow
+	  control on/off) is LOG_DBG. With this option each flow control
+	  transition -- the modem's and our own -- is logged at INF, dropped
+	  frames and FCoff are counted, and every
+	  MODEM_CMUX_3D_DIAG_INTERVAL_S one INF line per open DLCI gives its
+	  receive/transmit byte counts and flow control state.
+
+if MODEM_CMUX_3D_DIAG
+
+config MODEM_CMUX_3D_DIAG_INTERVAL_S
+	int "Seconds between two diagnostic lines per DLCI"
+	default 30
+	range 5 3600
+
+config MODEM_CMUX_3D_MSC_REFRESH_S
+	int "Resend our MSC on a DLCI that received nothing for this long (0 = never)"
+	default 0
+	range 0 3600
+	help
+	  Our MSC carries our receive flow control bit. It is sent once per
+	  transition and never repeated, so a lost or ignored "flow control
+	  off" leaves the peer silent on that DLCI for good. With a value
+	  above 0, an open DLCI that received no data for that many seconds
+	  (and whose receive buffer is not full) gets our MSC again, at most
+	  once per period.
+
+config MODEM_CMUX_3D_FC_STALL_CLEAR_S
+	int "Clear the peer's transmit flow control after this many seconds (0 = never)"
+	default 0
+	range 0 3600
+	help
+	  The peer stops our transmissions on a DLCI with an MSC (FC set or
+	  RTR clear) and releases them with another. If that release never
+	  arrives the DLCI stays mute in our direction. With a value above
+	  0 the hold is dropped after that long, with a WRN line.
+
+endif # MODEM_CMUX_3D_DIAG
+
 module = MODEM_CMUX
 module-str = modem_cmux
 source "subsys/logging/Kconfig.template.log_config"

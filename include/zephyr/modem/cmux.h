@@ -162,6 +162,21 @@ struct modem_cmux_dlci {
 	bool flow_control : 1;
 	bool rx_full : 1;
 	bool msc_sent : 1;
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	/* 3d local: counters for the periodic diagnostic line */
+	uint32_t diag_rx_bytes;
+	uint32_t diag_tx_bytes;
+	uint32_t diag_fc_on_events;
+	uint32_t diag_tx_refused_fc;
+	uint32_t diag_fc_cleared;
+	uint32_t diag_rx_full_events;
+	uint32_t diag_msc_refreshes;
+	uint32_t diag_rx_seen;
+	int64_t diag_fc_on_since_ms;
+	int64_t diag_rx_idle_since_ms;
+	int64_t diag_msc_refresh_ms;
+	bool diag_release_unanswered;
+#endif
 };
 
 struct modem_cmux_frame {
@@ -216,6 +231,13 @@ struct modem_cmux {
 	struct k_work_delayable connect_work;
 	struct k_work_delayable disconnect_work;
 	struct k_work_delayable runtime_pm_work;
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	/* 3d local: diagnostic line and transmit flow control stall guard */
+	struct k_work_delayable diag_work;
+	uint32_t diag_dropped_frames;
+	uint32_t diag_fcoff_events;
+	int64_t diag_next_log_ms;
+#endif
 
 	/* Synchronize actions */
 	struct k_event event;
