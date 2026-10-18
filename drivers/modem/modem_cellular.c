@@ -707,6 +707,10 @@ void modem_cellular_chat_on_cgev(struct modem_chat *chat, char **argv, uint16_t 
 	if (strcmp(argv[0], "+CGEV: ") != 0) {
 		return;
 	}
+#if CONFIG_MODEM_CELLULAR_3D_LOG_CGEV
+	LOG_INF("+CGEV: %s%s%s", argc > 1 ? argv[1] : "", argc > 2 ? "," : "",
+		argc > 2 ? argv[2] : "");
+#endif
 	/* See 3GPP TS 27.007 for +CGEV syntax
 	 *
 	 * Any of the following means PDN connected:

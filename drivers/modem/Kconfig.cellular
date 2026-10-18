@@ -142,6 +142,14 @@ config MODEM_CELLULAR_RESET_POWER_ON_DELAY_MS
 	int "Delay between de-asserting the reset pin and pulsing the power pin"
 	default 500
 
+config MODEM_CELLULAR_3D_LOG_CGEV
+	bool "Log every +CGEV packet domain event at INF (3d local)"
+	help
+	  3d-fw: the LTE data path of an A76xx went silent while the modem
+	  stayed registered. A +CGEV PDN deactivation is acted on (the driver
+	  treats it as a deregistration) but never logged; with this option
+	  each +CGEV line the modem sends is logged.
+
 config MODEM_CELLULAR_MAX_SCRIPT_FAILURES
 	int "Maximum consecutive script failures before suspending"
 	range 0 255
