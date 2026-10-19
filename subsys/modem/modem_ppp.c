@@ -329,6 +329,7 @@ static void modem_ppp_process_received_byte(struct modem_ppp *ppp, uint8_t byte)
 #if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
 			ppp->rx_stall_tx_since_ms = 0;
 			ppp->rx_stall_tx_frames = 0;
+			ppp->rx_stall_armed = true;
 #endif
 			if (net_recv_data(ppp->iface, ppp->rx_pkt) < 0) {
 				LOG_WRN("Net pkt could not be processed");
@@ -452,7 +453,12 @@ static void modem_ppp_send_handler(struct k_work *item)
 			/* The first frame after a received one may be a bare TCP ACK or a
 			 * datagram nobody answers: the clock starts with the second.
 			 */
-			ppp->rx_stall_tx_frames++;
+			/* Armed by the first frame received on this link: a dial whose
+			 * PPP never got an answer is the cellular driver's to handle.
+			 */
+			if (ppp->rx_stall_armed) {
+				ppp->rx_stall_tx_frames++;
+			}
 			if ((ppp->rx_stall_tx_frames == 2U) && (ppp->rx_stall_tx_since_ms == 0)) {
 				ppp->rx_stall_tx_since_ms = k_uptime_get();
 			}
@@ -712,6 +718,7 @@ int modem_ppp_attach(struct modem_ppp *ppp, struct modem_pipe *pipe)
 #if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
 	ppp->rx_stall_tx_since_ms = 0;
 	ppp->rx_stall_tx_frames = 0;
+	ppp->rx_stall_armed = false;
 	modem_work_schedule(&ppp->rx_stall_work, K_SECONDS(1));
 #endif
 	return 0;

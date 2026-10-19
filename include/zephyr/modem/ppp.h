@@ -111,6 +111,7 @@ struct modem_ppp {
 	struct k_work_delayable rx_stall_work;
 	int64_t rx_stall_tx_since_ms;
 	uint32_t rx_stall_tx_frames;
+	bool rx_stall_armed;
 	uint32_t rx_stall_trips;
 	atomic_t rx_stall_pending;
 #endif
