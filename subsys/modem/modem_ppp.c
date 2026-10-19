@@ -677,6 +677,16 @@ static void modem_ppp_rx_stall_handler(struct k_work *item)
 	if (!atomic_test_bit(&ppp->state, MODEM_PPP_STATE_ATTACHED_BIT)) {
 		return;
 	}
+	/* Only a link that carried IP (IPCP done, address on the interface) can stall;
+	 * before that the dial and LCP/IPCP timeouts are the cellular driver's.
+	 */
+	if (!IS_ENABLED(CONFIG_NET_IPV4) ||
+	    (net_if_ipv4_get_global_addr(ppp->iface, NET_ADDR_PREFERRED) == NULL)) {
+		ppp->rx_stall_tx_since_ms = 0;
+		ppp->rx_stall_tx_frames = 0;
+		modem_work_schedule(&ppp->rx_stall_work, K_SECONDS(1));
+		return;
+	}
 	if ((since != 0) && (ppp->rx_stall_tx_frames >= MODEM_PPP_3D_RX_STALL_MIN_FRAMES) &&
 	    !atomic_test_bit(&ppp->state, MODEM_PPP_STATE_DEAD_BIT) &&
 	    (k_uptime_get() - since >= CONFIG_MODEM_PPP_3D_RX_STALL_S * 1000LL)) {
