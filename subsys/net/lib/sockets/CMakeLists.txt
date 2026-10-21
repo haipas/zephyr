@@ -22,6 +22,7 @@ zephyr_library_sources_ifdef(CONFIG_NET_NATIVE                     sockets_inet.
 zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_CAN                sockets_can.c)
 zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_PACKET             sockets_packet.c)
 zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_SOCKOPT_TLS        sockets_tls.c)
+zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_3D_LOG_TLS_ERRORS  sockets_tls_3d.c)
 zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_OFFLOAD            socket_offload.c)
 zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_OFFLOAD_DISPATCHER socket_dispatcher.c)
 zephyr_library_sources_ifdef(CONFIG_NET_SOCKETS_OBJ_CORE           socket_obj_core.c)

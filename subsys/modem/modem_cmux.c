@@ -810,10 +810,23 @@ static void modem_cmux_on_msc_command(struct modem_cmux *cmux, struct modem_cmux
 		if (fc_signal != dlci->flow_control) {
 			if (fc_signal) {
 				dlci->flow_control = true;
+#if CONFIG_MODEM_CMUX_3D_DIAG
+				dlci->diag_fc_on_events++;
+				dlci->diag_fc_on_since_ms = k_uptime_get();
+				LOG_INF("DLCI %u: peer holds our transmissions (MSC FC %u RTR %u)",
+					dlci->dlci_address, signals.fc, signals.rtr);
+#else
 				LOG_DBG("DLCI %u flow control ON", dlci->dlci_address);
+#endif
 			} else {
 				dlci->flow_control = false;
+#if CONFIG_MODEM_CMUX_3D_DIAG
+				LOG_INF("DLCI %u: peer releases our transmissions after %lld ms",
+					dlci->dlci_address,
+					k_uptime_get() - dlci->diag_fc_on_since_ms);
+#else
 				LOG_DBG("DLCI %u flow control OFF", dlci->dlci_address);
+#endif
 				modem_pipe_notify_transmit_idle(&dlci->pipe);
 			}
 		}
@@ -836,6 +849,10 @@ static void modem_cmux_on_fcon_command(struct modem_cmux *cmux)
 
 static void modem_cmux_on_fcoff_command(struct modem_cmux *cmux)
 {
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	cmux->diag_fcoff_events++;
+	LOG_INF("peer sent FCoff: every DLCI holds");
+#endif
 	k_mutex_lock(&cmux->transmit_rb_lock, K_FOREVER);
 	cmux->flow_control_on = false;
 	k_mutex_unlock(&cmux->transmit_rb_lock);
@@ -1199,6 +1216,12 @@ static void modem_cmux_on_dlci_frame_uih(struct modem_cmux_dlci *dlci)
 	k_mutex_lock(&dlci->receive_rb_lock, K_FOREVER);
 	written = ring_buf_put(&dlci->receive_rb, cmux->frame.data, cmux->frame.data_len);
 	k_mutex_unlock(&dlci->receive_rb_lock);
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	dlci->diag_rx_bytes += cmux->frame.data_len;
+	if (cmux->frame.data_len > 0) {
+		dlci->diag_release_unanswered = false;
+	}
+#endif
 	if (written < cmux->frame.data_len) {
 		LOG_ERR("DLCI %u receive buffer overrun (dropped %u out of %u bytes)",
 			dlci->dlci_address, cmux->frame.data_len - written, cmux->frame.data_len);
@@ -1211,6 +1234,9 @@ static void modem_cmux_on_dlci_frame_uih(struct modem_cmux_dlci *dlci)
 	}
 
 	if (previous_state != dlci->rx_full) {
+#if CONFIG_MODEM_CMUX_3D_DIAG
+		dlci->diag_rx_full_events++;
+#endif
 		modem_cmux_send_msc(cmux, dlci);
 	}
 	modem_pipe_notify_receive_ready(&dlci->pipe);
@@ -1322,6 +1348,9 @@ static void modem_cmux_drop_frame(struct modem_cmux *cmux)
 #endif
 
 	LOG_WRN("Dropped frame");
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	cmux->diag_dropped_frames++;
+#endif
 	cmux->receive_state = MODEM_CMUX_RECEIVE_STATE_SOF;
 	cmux->frame_start = 0;
 
@@ -1988,6 +2017,9 @@ static int modem_cmux_dlci_pipe_api_transmit_chain(void *data,
 	}
 
 	if (dlci->flow_control) {
+#if CONFIG_MODEM_CMUX_3D_DIAG
+		dlci->diag_tx_refused_fc++;
+#endif
 		return 0;
 	}
 
@@ -2006,7 +2038,16 @@ static int modem_cmux_dlci_pipe_api_transmit_chain(void *data,
 		.tx_extra_len = num_frags > 1 ? frags[1].size : 0,
 	};
 
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	int16_t sent = modem_cmux_transmit_data_frame(cmux, &frame);
+
+	if (sent > 0) {
+		dlci->diag_tx_bytes += (uint32_t)sent;
+	}
+	return sent;
+#else
 	return modem_cmux_transmit_data_frame(cmux, &frame);
+#endif
 }
 
 static int modem_cmux_dlci_pipe_api_receive(void *data, uint8_t *buf, size_t size)
@@ -2029,7 +2070,13 @@ static int modem_cmux_dlci_pipe_api_receive(void *data, uint8_t *buf, size_t siz
 		uint32_t not_full_threshold = MIN(rb_capacity, CONFIG_MODEM_CMUX_MTU);
 
 		if (ring_buf_space_get(&dlci->receive_rb) >= not_full_threshold) {
+#if CONFIG_MODEM_CMUX_3D_DIAG
+			LOG_INF("DLCI %u receive buffer drained, flow control released",
+				dlci->dlci_address);
+			dlci->diag_release_unanswered = true;
+#else
 			LOG_DBG("DLCI %u receive buffer is no longer full", dlci->dlci_address);
+#endif
 			dlci->rx_full = false;
 			modem_cmux_send_msc(dlci->cmux, dlci);
 		}
@@ -2168,6 +2215,85 @@ static void modem_cmux_dlci_pipes_release(struct modem_cmux *cmux)
 	}
 }
 
+#if CONFIG_MODEM_CMUX_3D_DIAG
+/*
+ * 3d local. Runs once a second on the modem work queue, like the receive and
+ * transmit handlers, so the DLCI state it reads and writes is not touched
+ * concurrently.
+ */
+static void modem_cmux_diag_handler(struct k_work *item)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(item);
+	struct modem_cmux *cmux = CONTAINER_OF(dwork, struct modem_cmux, diag_work);
+	const int64_t now = k_uptime_get();
+	const bool log_now = now >= cmux->diag_next_log_ms;
+	sys_snode_t *node;
+
+	if (log_now) {
+		cmux->diag_next_log_ms = now + CONFIG_MODEM_CMUX_3D_DIAG_INTERVAL_S * 1000LL;
+	}
+
+	SYS_SLIST_FOR_EACH_NODE(&cmux->dlcis, node) {
+		struct modem_cmux_dlci *dlci = (struct modem_cmux_dlci *)node;
+
+		if (dlci->diag_rx_bytes != dlci->diag_rx_seen) {
+			dlci->diag_rx_seen = dlci->diag_rx_bytes;
+			dlci->diag_rx_idle_since_ms = now;
+		}
+
+		if (dlci->state != MODEM_CMUX_DLCI_STATE_OPEN) {
+			continue;
+		}
+
+		if ((CONFIG_MODEM_CMUX_3D_FC_STALL_CLEAR_S > 0) && dlci->flow_control &&
+		    (now - dlci->diag_fc_on_since_ms >=
+		     CONFIG_MODEM_CMUX_3D_FC_STALL_CLEAR_S * 1000LL)) {
+			LOG_WRN("DLCI %u: peer held our transmissions for %lld ms with no "
+				"release, resuming",
+				dlci->dlci_address, now - dlci->diag_fc_on_since_ms);
+			dlci->flow_control = false;
+			dlci->diag_fc_cleared++;
+			modem_pipe_notify_transmit_idle(&dlci->pipe);
+		}
+
+		/* Our "flow control off" went out and the DLCI has been silent since. */
+		if ((CONFIG_MODEM_CMUX_3D_MSC_REFRESH_S > 0) && dlci->diag_release_unanswered &&
+		    !dlci->rx_full &&
+		    (now - dlci->diag_rx_idle_since_ms >=
+		     CONFIG_MODEM_CMUX_3D_MSC_REFRESH_S * 1000LL) &&
+		    (now - dlci->diag_msc_refresh_ms >=
+		     CONFIG_MODEM_CMUX_3D_MSC_REFRESH_S * 1000LL)) {
+			dlci->diag_msc_refresh_ms = now;
+			dlci->diag_msc_refreshes++;
+			LOG_WRN("DLCI %u: nothing received for %lld s since our flow control "
+				"release, sending it again",
+				dlci->dlci_address, (now - dlci->diag_rx_idle_since_ms) / 1000);
+			modem_cmux_send_msc(cmux, dlci);
+		}
+
+		if (log_now) {
+			LOG_INF("DLCI %u: rx %u tx %u B, rx idle %lld s; peer hold %s "
+				"(%u holds, %u refused, %u cleared); our hold %s (%u holds%s), "
+				"%u MSC resent; dropped frames %u, FCoff %u",
+				dlci->dlci_address, dlci->diag_rx_bytes, dlci->diag_tx_bytes,
+				(now - dlci->diag_rx_idle_since_ms) / 1000,
+				dlci->flow_control ? "ON" : "off", dlci->diag_fc_on_events,
+				dlci->diag_tx_refused_fc, dlci->diag_fc_cleared,
+				dlci->rx_full ? "ON" : "off", dlci->diag_rx_full_events,
+				dlci->diag_release_unanswered ? ", release unanswered" : "",
+				dlci->diag_msc_refreshes, cmux->diag_dropped_frames,
+				cmux->diag_fcoff_events);
+		}
+	}
+
+	K_SPINLOCK(&cmux->work_lock) {
+		if (cmux->attached) {
+			modem_work_schedule(&cmux->diag_work, K_SECONDS(1));
+		}
+	}
+}
+#endif /* CONFIG_MODEM_CMUX_3D_DIAG */
+
 void modem_cmux_init(struct modem_cmux *cmux, const struct modem_cmux_config *config)
 {
 	__ASSERT_NO_MSG(cmux != NULL);
@@ -2190,6 +2316,9 @@ void modem_cmux_init(struct modem_cmux *cmux, const struct modem_cmux_config *co
 	k_work_init_delayable(&cmux->connect_work, modem_cmux_connect_handler);
 	k_work_init_delayable(&cmux->disconnect_work, modem_cmux_disconnect_handler);
 	k_work_init_delayable(&cmux->runtime_pm_work, modem_cmux_runtime_pm_handler);
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	k_work_init_delayable(&cmux->diag_work, modem_cmux_diag_handler);
+#endif
 	k_event_init(&cmux->event);
 	set_state(cmux, MODEM_CMUX_STATE_DISCONNECTED);
 
@@ -2239,6 +2368,9 @@ int modem_cmux_attach(struct modem_cmux *cmux, struct modem_pipe *pipe)
 
 	K_SPINLOCK(&cmux->work_lock) {
 		cmux->attached = true;
+#if CONFIG_MODEM_CMUX_3D_DIAG
+		modem_work_schedule(&cmux->diag_work, K_SECONDS(1));
+#endif
 	}
 
 	return 0;
@@ -2345,6 +2477,9 @@ void modem_cmux_release(struct modem_cmux *cmux)
 	k_work_cancel_delayable_sync(&cmux->disconnect_work, &sync);
 	k_work_cancel_delayable_sync(&cmux->transmit_work, &sync);
 	k_work_cancel_delayable_sync(&cmux->receive_work, &sync);
+#if CONFIG_MODEM_CMUX_3D_DIAG
+	k_work_cancel_delayable_sync(&cmux->diag_work, &sync);
+#endif
 
 	/* Unreference pipe */
 	cmux->pipe = NULL;

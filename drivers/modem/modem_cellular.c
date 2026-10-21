@@ -707,6 +707,10 @@ void modem_cellular_chat_on_cgev(struct modem_chat *chat, char **argv, uint16_t 
 	if (strcmp(argv[0], "+CGEV: ") != 0) {
 		return;
 	}
+#if CONFIG_MODEM_CELLULAR_3D_LOG_CGEV
+	LOG_INF("+CGEV: %s%s%s", argc > 1 ? argv[1] : "", argc > 2 ? "," : "",
+		argc > 2 ? argv[2] : "");
+#endif
 	/* See 3GPP TS 27.007 for +CGEV syntax
 	 *
 	 * Any of the following means PDN connected:
@@ -726,11 +730,20 @@ void modem_cellular_chat_on_cgev(struct modem_chat *chat, char **argv, uint16_t 
 	 * +CGEV: ME DEACT <p_cid>, <cid>, <event_type>
 	 */
 
-	if (strstr(argv[0], " ACT")) {
-		connected = true;
-	} else if ((strstr(argv[0], "DETACH")) ||
-		   (strstr(argv[0], "DEACT"))) {
+	/* 3d local: argv[0] is the match itself ("+CGEV: "), the event is argv[1]
+	 * (the first comma-separated field), so these checks used to never match
+	 * and a PDN deactivation was dropped. The SIMCom A76xx reports
+	 * "EPS PDN ACT 1" / "EPS PDN DEACT 1". A deactivation the driver causes
+	 * itself (AT+CGACT=0 in a dial script) arrives in the dial state, which
+	 * ignores MODEM_CELLULAR_EVENT_DEREGISTERED.
+	 */
+	if (argc < 2) {
+		return;
+	}
+	if ((strstr(argv[1], "DETACH") != NULL) || (strstr(argv[1], "DEACT") != NULL)) {
 		connected = false;
+	} else if (strstr(argv[1], " ACT") != NULL) {
+		connected = true;
 	} else {
 		return;
 	}
@@ -2033,6 +2046,19 @@ static void modem_cellular_registered_event_handler(struct modem_cellular_data *
 		modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_AWAIT_PPP_DEAD);
 		break;
 	case MODEM_CELLULAR_EVENT_PPP_DEAD:
+#if CONFIG_MODEM_PPP_3D_RX_STALL_S > 0
+		/* 3d local: modem_ppp dropped a link that only sent. The modem's own
+		 * PPP is still up on the data DLCI, so recover like after too many
+		 * script failures.
+		 */
+		if (modem_ppp_3d_take_rx_stall(config->ppp)) {
+			net_if_carrier_off(modem_ppp_get_iface(config->ppp));
+			modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_IDLE);
+			modem_cellular_delegate_event(data, MODEM_CELLULAR_EVENT_RESUME);
+			LOG_WRN("PPP sent without receiving, restarting modem");
+			break;
+		}
+#endif
 		if (net_if_is_admin_up(modem_ppp_get_iface(config->ppp))) {
 			modem_cellular_enter_state(data, MODEM_CELLULAR_STATE_AWAIT_PPP_DEAD);
 			modem_cellular_start_timer(data, MODEM_CELLULAR_PERIODIC_SCRIPT_TIMEOUT);

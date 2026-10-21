@@ -11,6 +11,11 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(net_sock_tls, CONFIG_NET_SOCKETS_LOG_LEVEL);
 
+#if defined(CONFIG_NET_SOCKETS_3D_LOG_TLS_ERRORS)
+/* 3d local, sockets_tls_3d.c: an mbedtls error that ends a TLS read, at WRN. */
+void z_3d_tls_log_error(const char *where, int mbedtls_err);
+#endif
+
 #include <zephyr/init.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/net/net_log.h>
@@ -3677,6 +3682,9 @@ static ssize_t recv_tls(struct tls_context *ctx, void *buf,
 				}
 			} else {
 				NET_ERR("TLS recv error: -%x", -ret);
+#if defined(CONFIG_NET_SOCKETS_3D_LOG_TLS_ERRORS)
+				z_3d_tls_log_error("recv", ret);
+#endif
 				ret = -EIO;
 			}
 

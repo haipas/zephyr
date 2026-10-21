@@ -23,6 +23,28 @@ config MODEM_BACKEND_UART_ASYNC
 
 if MODEM_BACKEND_UART_ISR
 
+config MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	bool "Count UART receive errors and log them (3d local)"
+	help
+	  Enables the UART error interrupts, counts receive FIFO overruns
+	  (bytes lost before the driver could read them) and other receive
+	  errors, and logs a WRN line at most every 10 s while they grow.
+
+config MODEM_BACKEND_UART_ISR_3D_SNIFF_S
+	int "After a receive error at a raised rate, listen this long at 115200 (3d local, 0 = off)"
+	depends on MODEM_BACKEND_UART_ISR_3D_COUNT_ERRORS
+	default 0
+	range 0 10
+	help
+	  Bench diagnostics. A modem that restarts on its own comes back at its
+	  factory rate while the host still listens at the raised one: its boot
+	  lines arrive as framing errors. With a value above 0, a burst of
+	  receive errors (3 other than overruns since the last listen) while
+	  the UART runs above 115200
+	  switches it to 115200 for that many seconds, keeps the first 80 bytes
+	  received, restores the previous configuration and logs them as text
+	  (WRN). At most once a minute.
+
 config MODEM_BACKEND_UART_ISR_RECEIVE_IDLE_TIMEOUT_MS
 	int "Modem ISR UART delay between first byte received and RECEIVE_READY pipe event"
 	default 20
